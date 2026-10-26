@@ -15,6 +15,7 @@
           "get_update_status",
           "check_starshot_update",
           "download_starshot_update",
+          "set_update_confirmation",
           "install_starshot_update",
           "list_recovery_points",
           "create_recovery_point",

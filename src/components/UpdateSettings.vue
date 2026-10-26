@@ -2,35 +2,35 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { createRecoveryPoint, initialUpdateStatus, listRecoveryPoints, readRecoveryPoint, restartAfterUpdate, updateDesktopAvailable, watchStarshotUpdates } from '../update-api';
 import type { RecoveryPoint, UpdateStatus } from '../update-api';
-import { downloadProgress, fileSize, updateInProgress, updateNeedsRestart, updatePhaseText, updateCanInstall } from '../update-state';
+import { downloadProgress, fileSize, updateInProgress, updateNeedsRestart, updatePhaseText, updateCanInstall, updateIsReady } from '../update-state';
 import { restoreWithBackup } from '../session';
 
 const props = defineProps<{ disabled?: boolean; getSession: () => Promise<string>; restoreSession: (serialized: string) => Promise<void> }>();
 const emit = defineEmits<{ busy: [value: boolean]; status: [value: UpdateStatus]; 'recovery-available': [point: RecoveryPoint | null] }>();
 const status = ref(initialUpdateStatus()), statusLoaded = ref(false);
 const points = ref<RecoveryPoint[]>([]), pointsLoaded = ref(false);
-const operation = ref<'load' | 'check' | 'download' | 'install' | 'snapshot' | 'restore' | 'restart' | null>(null);
+const operation = ref<'load' | 'check' | 'download' | 'confirm' | 'install' | 'snapshot' | 'restore' | 'restart' | null>(null);
 const error = ref(''), recoveryError = ref(''), notice = ref('');
 const installVersion = ref<string | null>(null), restoreSelected = ref<RecoveryPoint | null>(null);
 const confirmation = ref<HTMLElement>(), installDialog = ref<HTMLDialogElement>();
-let disposed = false, promptedVersion: string | null = null;
+let disposed = false;
 const monitor = watchStarshotUpdates(value => { status.value = value; statusLoaded.value = true; emit('status', value); });
 const needsRestart = computed(() => updateNeedsRestart(status.value));
 const working = computed(() => operation.value !== null || updateInProgress(status.value));
-const confirming = computed(() => !!installVersion.value || !!restoreSelected.value);
+const confirming = computed(() => status.value.confirmationPending || !!installVersion.value || !!restoreSelected.value);
 const blocked = computed(() => props.disabled || working.value || needsRestart.value);
 const progress = computed(() => downloadProgress(status.value));
 const canInstall = computed(() => updateCanInstall(status.value));
+const hasDownload = computed(() => updateIsReady(status.value));
 const canDownload = computed(() => !!status.value.available && !status.value.downloadReady && ['available', 'error'].includes(status.value.phase));
 const upgradePoint = computed(() => points.value.find(point => point.reason === 'before-update' && point.compatible));
-watch(() => confirming.value || needsRestart.value || updateInProgress(status.value) || ['install', 'snapshot', 'restore', 'restart'].includes(operation.value || ''), value => emit('busy', value), { immediate: true, flush: 'sync' });
-// A repeated read of the same ready package must not reopen a dismissed prompt.
+watch(() => confirming.value || needsRestart.value || updateInProgress(status.value) || ['confirm', 'install', 'snapshot', 'restore', 'restart'].includes(operation.value || ''), value => emit('busy', value), { immediate: true, flush: 'sync' });
+// The native confirmation gate protects global shortcuts as well as this editor.
 watch(status, value => {
-  if (['checking', 'downloading'].includes(value.phase)) promptedVersion = null;
-  const version = value.available?.version;
-  if (value.phase === 'ready' && value.downloadReady && version && version !== promptedVersion && !confirming.value) {
-    promptedVersion = version;
-    installVersion.value = version;
+  if (updateCanInstall(value) && !restoreSelected.value) {
+    installVersion.value ??= value.available!.version;
+  } else if (!value.confirmationPending && !updateNeedsRestart(value)) {
+    installVersion.value = null;
   }
 }, { flush: 'sync' });
 watch(installVersion, async version => {
@@ -80,14 +80,21 @@ function download() {
   });
 }
 function confirmInstall() {
-  if (blocked.value || confirming.value || !canInstall.value) return;
-  promptedVersion = status.value.available!.version;
-  installVersion.value = promptedVersion;
+  if (blocked.value || confirming.value || !hasDownload.value) return;
+  const expectedVersion = status.value.available!.version;
+  return perform('confirm', () => setConfirmation(expectedVersion, true));
 }
 function deferInstall() {
-  if (blocked.value) return;
-  installVersion.value = null;
-  notice.value = '可以继续编辑，稍后再安装。关闭星镜后需重新下载更新。';
+  const expectedVersion = installVersion.value;
+  if (blocked.value || !expectedVersion) return;
+  return perform('confirm', async () => {
+    await setConfirmation(expectedVersion, false);
+    if (!status.value.confirmationPending) notice.value = '可以继续编辑，稍后再安装。关闭星镜后需重新下载更新。';
+  });
+}
+async function setConfirmation(expectedVersion: string, pending: boolean) {
+  try { await monitor.confirm(expectedVersion, pending); }
+  catch (reason) { try { await monitor.read(); } catch { /* Retain the last native gate on transport failure. */ } throw reason; }
 }
 function installDialogKey(event: KeyboardEvent) {
   // Native <dialog> traps Tab and handles Escape; suppress editor/browser shortcuts.
@@ -98,7 +105,7 @@ async function confirmRestore(point: RecoveryPoint) {
   restoreSelected.value = point;
   await nextTick(); if (!disposed) confirmation.value?.focus();
 }
-function cancelConfirmation() { if (!blocked.value) { installVersion.value = null; restoreSelected.value = null; } }
+function cancelConfirmation() { if (!blocked.value) restoreSelected.value = null; }
 function install() {
   const approvedVersion = installVersion.value;
   if (!approvedVersion || !canInstall.value) return;
@@ -165,7 +172,7 @@ onBeforeUnmount(() => { disposed = true; installDialog.value?.close(); monitor.d
       <div v-if="!needsRestart" class="update-actions">
         <button type="button" class="button" :disabled="blocked || confirming || (statusLoaded && !status.configured)" @click="statusLoaded ? check() : refresh()">{{ status.phase === 'checking' ? '正在检查…' : statusLoaded ? '检查更新' : '重新读取状态' }}</button>
         <button v-if="canDownload" type="button" class="button primary" :disabled="blocked || confirming" @click="download">更新</button>
-        <button v-if="canInstall" type="button" class="button primary" :disabled="blocked || confirming" @click="confirmInstall">安装并重启</button>
+        <button v-if="hasDownload" type="button" class="button primary" :disabled="blocked || confirming" @click="confirmInstall">安装并重启</button>
       </div>
       <dialog ref="installDialog" class="install-dialog" data-update-install-dialog tabindex="-1" role="alertdialog" aria-labelledby="install-update-heading" aria-describedby="install-update-description" @cancel.prevent="deferInstall" @keydown.stop="installDialogKey">
         <h3 id="install-update-heading">{{ needsRestart ? '正在重启星镜…' : operation === 'install' ? '正在准备安装…' : '安装并重启' }}</h3>

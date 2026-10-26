@@ -2,7 +2,8 @@ import type { UpdateStatus } from './update-api.ts';
 
 export function updateInProgress(state: UpdateStatus): boolean { return ['checking', 'downloading', 'backing-up', 'installing'].includes(state.phase); }
 export function updateNeedsRestart(state: UpdateStatus): boolean { return ['installed', 'restart-required'].includes(state.phase); }
-export function updateCanInstall(state: UpdateStatus): boolean { return state.downloadReady && !!state.available && ['ready', 'error'].includes(state.phase); }
+export function updateIsReady(state: UpdateStatus): boolean { return state.downloadReady && !!state.available && ['ready', 'error'].includes(state.phase); }
+export function updateCanInstall(state: UpdateStatus): boolean { return state.confirmationPending && updateIsReady(state); }
 export function downloadProgress(state: UpdateStatus): number | undefined {
   if (!state.total || !Number.isFinite(state.total) || state.total <= 0) return undefined;
   return Math.min(100, Math.max(0, Number.isFinite(state.downloaded) ? state.downloaded / state.total * 100 : 0));

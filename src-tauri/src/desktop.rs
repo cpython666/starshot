@@ -692,6 +692,26 @@ async fn download_starshot_update(
     app.state::<Updates>().status()
 }
 #[tauri::command]
+fn set_update_confirmation(
+    app: AppHandle,
+    window: WebviewWindow,
+    expected_version: String,
+    pending: bool,
+) -> Result<UpdateStatus> {
+    main_only(&window)?;
+    let context = app.state::<Context>();
+    let _operation = context
+        .operation
+        .try_lock()
+        .map_err(|_| "另一项编辑操作仍在进行")?;
+    if pending {
+        no_active_capture(&context)?;
+    }
+    app.state::<Updates>()
+        .set_confirmation(&app, &expected_version, pending)?;
+    app.state::<Updates>().status()
+}
+#[tauri::command]
 async fn install_starshot_update(
     app: AppHandle,
     window: WebviewWindow,
@@ -914,8 +934,8 @@ pub fn run() {
                         }
                     }
                     "quit" => {
-                        if app.state::<Updates>().installing() {
-                            report_error(app, "正在保存恢复点或安装更新，请等待完成后退出");
+                        if app.state::<Updates>().blocks_exit() {
+                            report_error(app, "请先完成安装确认或等待更新完成后退出");
                         } else {
                             app.exit(0);
                         }
@@ -965,6 +985,7 @@ pub fn run() {
             get_update_status,
             check_starshot_update,
             download_starshot_update,
+            set_update_confirmation,
             install_starshot_update,
             list_recovery_points,
             create_recovery_point,
@@ -975,7 +996,7 @@ pub fn run() {
         .expect("星镜无法启动")
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { api, .. } = event {
-                if app.state::<Updates>().installing() {
+                if app.state::<Updates>().blocks_exit() {
                     api.prevent_exit();
                 }
             }

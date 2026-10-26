@@ -26,6 +26,7 @@ pub struct UpdateStatus {
     available: Option<AvailableUpdate>,
     downloaded: u64,
     download_ready: bool,
+    confirmation_pending: bool,
     total: Option<u64>,
     error: Option<String>,
     backup_id: Option<String>,
@@ -50,6 +51,7 @@ impl Pending {
                 available: None,
                 downloaded: 0,
                 download_ready: false,
+                confirmation_pending: false,
                 total: None,
                 error: None,
                 backup_id: None,
@@ -69,6 +71,7 @@ impl Pending {
         self.status.error = None;
         self.status.downloaded = 0;
         self.status.download_ready = false;
+        self.status.confirmation_pending = false;
         self.status.total = None;
         self.status.backup_id = None;
         Ok(())
@@ -103,12 +106,24 @@ impl Pending {
         self.status.total = Some(bytes.len() as u64);
         self.downloaded_bytes = Some(Arc::new(bytes));
         self.status.download_ready = true;
+        self.status.confirmation_pending = true;
         self.status.phase = "ready";
         self.status.error = None;
         Ok(())
     }
+    fn set_confirmation(&mut self, expected: &str, pending: bool) -> Result<()> {
+        if !matches!(self.status.phase, "ready" | "error") {
+            return Err("当前更新阶段不能更改安装确认。".into());
+        }
+        self.validate_candidate(expected)?;
+        if !self.status.download_ready || self.downloaded_bytes.is_none() {
+            return Err("请先下载并验证更新包。".into());
+        }
+        self.status.confirmation_pending = pending;
+        Ok(())
+    }
     fn begin_install(&mut self, expected: &str) -> Result<Arc<Vec<u8>>> {
-        ensure_idle(&self.status)?;
+        ensure_operation_idle(&self.status)?;
         self.validate_candidate(expected)?;
         let bytes = self
             .downloaded_bytes
@@ -116,6 +131,9 @@ impl Pending {
             .ok_or("请先下载并验证更新包。")?;
         if !self.status.download_ready {
             return Err("请先下载并验证更新包。".into());
+        }
+        if !self.status.confirmation_pending {
+            return Err("请先打开并确认安装更新。".into());
         }
         self.status.phase = "backing-up";
         self.status.error = None;
@@ -125,6 +143,7 @@ impl Pending {
     fn installed(&mut self) {
         self.downloaded_bytes = None;
         self.status.download_ready = false;
+        self.status.confirmation_pending = false;
         self.status.phase = "installed";
     }
     fn failed(&mut self, error: String) {
@@ -176,10 +195,13 @@ impl Updates {
             Err("请在更新完成后再重启星镜。".into())
         }
     }
-    pub fn installing(&self) -> bool {
+    pub fn blocks_exit(&self) -> bool {
         self.0
             .lock()
-            .map(|pending| matches!(pending.status.phase, "backing-up" | "installing"))
+            .map(|pending| {
+                pending.status.confirmation_pending
+                    || matches!(pending.status.phase, "backing-up" | "installing")
+            })
             .unwrap_or(true)
     }
     pub fn begin_check(&self, app: &AppHandle) -> Result<()> {
@@ -227,6 +249,9 @@ impl Updates {
     pub fn downloaded(&self, app: &AppHandle, expected: &str, bytes: Vec<u8>) -> Result<()> {
         self.change(app, |pending| pending.downloaded(expected, bytes))
     }
+    pub fn set_confirmation(&self, app: &AppHandle, expected: &str, pending: bool) -> Result<()> {
+        self.change(app, |state| state.set_confirmation(expected, pending))
+    }
     pub fn begin_install(
         &self,
         app: &AppHandle,
@@ -273,6 +298,14 @@ impl Updates {
 }
 
 fn ensure_idle(status: &UpdateStatus) -> Result<()> {
+    ensure_operation_idle(status)?;
+    if status.confirmation_pending {
+        Err("请先确认安装更新或选择稍后安装。".into())
+    } else {
+        Ok(())
+    }
+}
+fn ensure_operation_idle(status: &UpdateStatus) -> Result<()> {
     if matches!(
         status.phase,
         "checking" | "downloading" | "backing-up" | "installing" | "installed" | "restart-required"
@@ -366,8 +399,10 @@ mod tests {
         pending.failed("signature verification failed".into());
         assert_eq!(pending.status.phase, "error");
         assert!(!pending.status.download_ready);
+        assert!(!pending.status.confirmation_pending);
         assert!(pending.downloaded_bytes.is_none());
         assert!(pending.begin_install("0.3.0").is_err());
+        assert!(pending.set_confirmation("0.3.0", true).is_err());
         pending.begin_download("0.3.0").unwrap();
         assert!(pending.downloaded("0.3.0", Vec::new()).is_err());
         pending.failed("empty download".into());
@@ -386,7 +421,8 @@ mod tests {
         assert!(!pending
             .cleanup_started
             .load(std::sync::atomic::Ordering::SeqCst));
-        assert!(ensure_idle(&pending.status).is_ok());
+        assert!(pending.status.confirmation_pending);
+        assert!(ensure_idle(&pending.status).is_err());
         assert!(pending.begin_download("0.3.0").is_err());
         assert!(pending.begin_install("0.4.0").is_err());
         assert_eq!(pending.status.phase, "ready");
@@ -394,12 +430,18 @@ mod tests {
         assert_eq!(pending.status.phase, "backing-up");
         pending.failed("backup disk unavailable".into());
         assert!(pending.status.download_ready);
+        assert!(pending.status.confirmation_pending);
+        assert!(ensure_idle(&pending.status).is_err());
+        pending.set_confirmation("0.3.0", false).unwrap();
+        assert!(ensure_idle(&pending.status).is_ok());
+        pending.set_confirmation("0.3.0", true).unwrap();
         let retry = pending.begin_install("0.3.0").unwrap();
         assert!(Arc::ptr_eq(&first, &retry));
         assert_eq!(retry.as_slice(), &[1, 2, 3]);
         pending.installed();
         assert_eq!(pending.status.phase, "installed");
         assert!(!pending.status.download_ready);
+        assert!(!pending.status.confirmation_pending);
         assert!(pending.downloaded_bytes.is_none());
     }
 
@@ -408,9 +450,13 @@ mod tests {
         let mut pending = candidate();
         pending.begin_download("0.3.0").unwrap();
         pending.downloaded("0.3.0", vec![1, 2, 3]).unwrap();
+        assert!(pending.begin_check().is_err());
+        assert!(pending.status.download_ready);
+        pending.set_confirmation("0.3.0", false).unwrap();
         pending.begin_check().unwrap();
         assert_eq!(pending.status.phase, "checking");
         assert!(!pending.status.download_ready);
+        assert!(!pending.status.confirmation_pending);
         assert!(pending.downloaded_bytes.is_none());
         assert!(pending.status.available.is_none());
         pending.status.available = Some(AvailableUpdate {
@@ -423,7 +469,50 @@ mod tests {
         assert!(pending.begin_install("0.4.0").is_err());
         let fresh_process = Pending::new();
         assert!(!fresh_process.status.download_ready);
+        assert!(!fresh_process.status.confirmation_pending);
         assert!(fresh_process.downloaded_bytes.is_none());
+    }
+
+    #[test]
+    fn confirmation_gates_native_operations_until_deferred_or_installed() {
+        let updates = Updates(Mutex::new(candidate()));
+        {
+            let mut pending = updates.0.lock().unwrap();
+            assert!(pending.set_confirmation("0.3.0", true).is_err());
+            pending.begin_download("0.3.0").unwrap();
+            pending.downloaded("0.3.0", vec![1, 2, 3]).unwrap();
+            assert!(pending.set_confirmation("0.4.0", false).is_err());
+            assert!(pending.status.confirmation_pending);
+        }
+        assert!(updates.ensure_idle().is_err());
+        assert!(updates.blocks_exit());
+        {
+            let mut pending = updates.0.lock().unwrap();
+            pending.set_confirmation("0.3.0", false).unwrap();
+            assert!(pending.begin_install("0.3.0").is_err());
+            assert_eq!(pending.status.phase, "ready");
+        }
+        assert!(updates.ensure_idle().is_ok());
+        assert!(!updates.blocks_exit());
+        updates
+            .0
+            .lock()
+            .unwrap()
+            .set_confirmation("0.3.0", true)
+            .unwrap();
+        assert!(updates.ensure_idle().is_err());
+        assert!(updates.blocks_exit());
+        {
+            let mut pending = updates.0.lock().unwrap();
+            pending.begin_install("0.3.0").unwrap();
+            assert!(pending.set_confirmation("0.3.0", false).is_err());
+            assert!(pending.status.confirmation_pending);
+            pending.status.phase = "installing";
+            assert!(pending.set_confirmation("0.3.0", false).is_err());
+            pending.installed();
+        }
+        assert!(!updates.blocks_exit());
+        assert!(updates.allow_restart().is_ok());
     }
 
     #[test]

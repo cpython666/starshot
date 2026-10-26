@@ -6,10 +6,10 @@ export type UpdatePhase = 'idle' | 'checking' | 'up-to-date' | 'available' | 'do
 export type UpdateStatus = {
   revision: number; currentVersion: string; configured: boolean; phase: UpdatePhase;
   available?: { version: string; date?: string | null; notes?: string | null } | null;
-  downloadReady: boolean; downloaded: number; total?: number | null; error?: string | null; backupId?: string | null;
+  downloadReady: boolean; confirmationPending: boolean; downloaded: number; total?: number | null; error?: string | null; backupId?: string | null;
 };
 export type RecoveryPoint = { id: string; createdAt: number; appVersion: string; schemaVersion: number; reason: string; totalBytes: number; path: string; compatible: boolean };
-export function initialUpdateStatus(): UpdateStatus { return { revision: 0, currentVersion: appVersion, configured: false, phase: 'idle', downloadReady: false, downloaded: 0 }; }
+export function initialUpdateStatus(): UpdateStatus { return { revision: 0, currentVersion: appVersion, configured: false, phase: 'idle', downloadReady: false, confirmationPending: false, downloaded: 0 }; }
 async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!updateDesktopAvailable) throw Error('软件更新与恢复需要在星镜桌面版使用。');
   return (await import('@tauri-apps/api/core')).invoke<T>(command, args);
@@ -47,6 +47,7 @@ export function watchStarshotUpdates(onChange: (state: UpdateStatus) => void, tr
   return {
     read: () => run('get_update_status'), check: () => run('check_starshot_update'),
     download: (expectedVersion: string) => run('download_starshot_update', { expectedVersion }),
+    confirm: (expectedVersion: string, pending: boolean) => run('set_update_confirmation', { expectedVersion, pending }),
     install: (expectedVersion: string, session: string) => run('install_starshot_update', { expectedVersion, session }),
     dispose() { disposed = true; unsubscribe?.(); unsubscribe = undefined; },
   };

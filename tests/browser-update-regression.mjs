@@ -29,7 +29,7 @@ const source = '(' + function ({ currentVersion, candidateVersion }) {
   const style = {background:'solid',backgroundColor:'#223344',gradientFrom:'#b5a0e2',gradientTo:'#617aaa',gradientAngle:135,padding:40,radius:16,borderWidth:2,borderColor:'#ffffff',shadow:16,aspect:'auto'};
   const session = JSON.stringify({schemaVersion:1,theme:'moss',currentId:'fixture-original',documents:[{id:'fixture-original',name:'恢复原创示例.png',dataUrl,width:640,height:360,state:{annotations:[{id:'fixture-annotation',type:'rect',x:40,y:40,width:100,height:80,color:'#ffffff',lineWidth:5}],crop:{x:0,y:0,width:640,height:360},style}}]});
   const original = {id:'before-update-fixture',createdAt:1792972800000,appVersion:'0.1.0',schemaVersion:1,reason:'before-update',totalBytes:session.length,path:'/fixture-only/before-update-fixture.json',compatible:true};
-  const mock = window._starshotMock = {calls:[],points:[original],sessions:{[original.id]:session},backupFailure:false,readFailure:false,installFailure:false,installation:null,status:{revision:0,currentVersion,configured:true,phase:'idle',downloadReady:false,downloaded:0}};
+  const mock = window._starshotMock = {calls:[],points:[original],sessions:{[original.id]:session},backupFailure:false,readFailure:false,installFailure:false,cancelFailure:false,captureActive:false,holdConfirmation:false,installation:null,status:{revision:0,currentVersion,configured:true,phase:'idle',downloadReady:false,confirmationPending:false,downloaded:0}};
   mock.emit = (patch) => { mock.status = {...mock.status,...patch}; for (const listener of listeners.values()) if(listener.event==='starshot-update-status') callbacks.get(listener.handler)({event:listener.event,id:listener.id,payload:{...mock.status}}); };
   window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {unregisterListener(_event,id){listeners.delete(id);}};
   window.__TAURI_INTERNALS__ = {
@@ -42,7 +42,7 @@ const source = '(' + function ({ currentVersion, candidateVersion }) {
       if(command==='get_app_status')return {captureAvailable:true};
       if(command==='get_update_status')return {...mock.status};
       if(command==='list_recovery_points')return [...mock.points];
-      if(command==='check_starshot_update'){mock.emit({revision:mock.status.revision+1,phase:'available',downloadReady:false,error:null,available:{version:candidateVersion,notes:'原创测试更新说明 <img src=x onerror=alert(1)>',date:'2026-10-26T00:00:00Z'}});return {...mock.status};}
+      if(command==='check_starshot_update'){mock.emit({revision:mock.status.revision+1,phase:'available',downloadReady:false,confirmationPending:false,error:null,available:{version:candidateVersion,notes:'原创测试更新说明 <img src=x onerror=alert(1)>',date:'2026-10-26T00:00:00Z'}});return {...mock.status};}
       if(command==='create_recovery_point'){
         if(mock.backupFailure)throw Error('原创测试：备份磁盘不可用');
         const point={...original,id:`manual-${mock.points.length}`,reason:'manual',createdAt:Date.now(),appVersion:currentVersion,totalBytes:args.session.length,path:'/fixture-only/manual.json'};
@@ -50,20 +50,29 @@ const source = '(' + function ({ currentVersion, candidateVersion }) {
       }
       if(command==='read_recovery_point')return {point:mock.points.find(p=>p.id===args.id),session:mock.readFailure?'damaged fixture JSON':mock.sessions[args.id]};
       if(command==='download_starshot_update'){
-        mock.download=args;mock.emit({revision:mock.status.revision+1,phase:'downloading',downloadReady:false,downloaded:20,total:100,error:null});
+        mock.download=args;mock.emit({revision:mock.status.revision+1,phase:'downloading',downloadReady:false,confirmationPending:false,downloaded:20,total:100,error:null});
         return new Promise((resolve,reject)=>{
-          mock.readyDownload=()=>mock.emit({revision:mock.status.revision+1,phase:'ready',downloadReady:true,downloaded:100,total:100});
+          mock.readyDownload=()=>mock.emit({revision:mock.status.revision+1,phase:'ready',downloadReady:true,confirmationPending:true,downloaded:100,total:100});
           mock.finishDownload=()=>{if(mock.status.phase!=='ready')mock.readyDownload();resolve({...mock.status});};
           mock.failDownload=()=>{mock.emit({revision:mock.status.revision+1,phase:'error',downloadReady:false,error:'原创测试：下载签名校验失败'});reject(Error(mock.status.error));};
         });
       }
+      if(command==='set_update_confirmation'){
+        if(!mock.status.downloadReady||args.expectedVersion!==mock.status.available?.version)throw Error('测试：确认版本与已缓存更新不符');
+        if(!args.pending&&mock.cancelFailure)throw Error('原创测试：取消安装确认失败');
+        if(args.pending&&mock.captureActive)throw Error('原创测试：正在截图，请结束后再安装');
+        const finish=()=>{mock.emit({revision:mock.status.revision+1,confirmationPending:args.pending});return {...mock.status};};
+        if(mock.holdConfirmation){mock.holdConfirmation=false;return new Promise(resolve=>{mock.finishConfirmation=()=>resolve(finish());});}
+        return finish();
+      }
       if(command==='install_starshot_update'){
+        if(!mock.status.confirmationPending)throw Error('测试：安装前必须获得原生确认锁');
         if(!mock.status.downloadReady||args.expectedVersion!==mock.status.available?.version)throw Error('测试：没有对应的已验证更新包');
         mock.installation=args;mock.emit({revision:mock.status.revision+1,phase:'backing-up',error:null});
         if(mock.installFailure){mock.emit({revision:mock.status.revision+1,phase:'error',error:'原创测试：安装前备份失败',downloadReady:true});return {...mock.status};}
         return new Promise(resolve=>{
           mock.beginInstall=()=>mock.emit({revision:mock.status.revision+1,phase:'installing'});
-          mock.finishInstall=()=>{mock.emit({revision:mock.status.revision+1,phase:'installed',downloadReady:false,backupId:'upgrade-test'});resolve({...mock.status});};
+          mock.finishInstall=()=>{mock.emit({revision:mock.status.revision+1,phase:'installed',downloadReady:false,confirmationPending:false,backupId:'upgrade-test'});resolve({...mock.status});};
         });
       }
       throw Error('测试禁止真实原生操作：'+command);
@@ -175,14 +184,25 @@ try {
   assert.equal(await page.evaluate(() => window._starshotMock.calls.filter(c => c.command === 'create_recovery_point').length), backupsBeforeDownload);
   console.log(await page.snapshot());
   await page.screenshot({ path:join(artifacts,'install-and-restart.png') });
+  assert.equal(await page.evaluate(() => window._starshotMock.status.confirmationPending && !window._starshotMock.calls.some(c=>c.command==='set_update_confirmation')),true);
   await page.keyboard.press('Tab');
   assert.equal(await page.evaluate(() => document.querySelector('[data-update-install-dialog]').contains(document.activeElement)), true);
+  await page.evaluate(() => {const m=window._starshotMock,latest=m.status;m.cancelFailure=true;m.emit({revision:0,available:{version:'99.0.0'},confirmationPending:false});m.status=latest;});
   await page.keyboard.press('Escape');
+  await page.waitForFunction(() => document.querySelector('[data-update-install-dialog] [role="alert"]')?.textContent.includes('取消安装确认失败') && !document.querySelector('[data-update-install-dialog] .primary').disabled);
+  assert.equal(await page.evaluate(() => document.querySelector('.workspace').inert && !!document.querySelector('[data-update-install-dialog][open]') && window._starshotMock.status.confirmationPending),true);
+  await page.evaluate(() => {const m=window._starshotMock;m.cancelFailure=false;m.holdConfirmation=true;m.confirmCount=m.calls.filter(c=>c.command==='set_update_confirmation').length;});
+  await page.click('loc=role:button[name="稍后安装"]');
+  await page.waitForFunction(() => typeof window._starshotMock.finishConfirmation==='function');
+  await page.evaluate(() => document.querySelector('[data-update-install-dialog] button').click());
+  assert.deepEqual(await page.evaluate(() => {const m=window._starshotMock;return {locked:document.querySelector('.workspace').inert,open:!!document.querySelector('[data-update-install-dialog][open]'),confirmCalls:m.calls.filter(c=>c.command==='set_update_confirmation').length-m.confirmCount};}),{locked:true,open:true,confirmCalls:1});
+  assert.deepEqual(await page.evaluate(() => window._starshotMock.calls.filter(c=>c.command==='set_update_confirmation').at(-1).args),{expectedVersion:candidateVersion,pending:false});
+  await page.evaluate(() => {window._starshotMock.finishConfirmation();delete window._starshotMock.finishConfirmation;});
   await page.waitForFunction(() => !document.querySelector('[data-update-install-dialog][open]') && !document.querySelector('.workspace').inert);
   await page.click('loc=role:button[name="刷新本机状态"]');
   await page.waitForFunction(() => document.querySelector('.update-settings').getAttribute('aria-busy') === 'false');
-  assert.equal(await page.evaluate(() => !!document.querySelector('[data-update-install-dialog][open]')), false);
-  results.push({ name: 'ready event opens accessible install dialog only after verified download; repeated ready refresh does not reopen after Escape', pass: true });
+  assert.equal(await page.evaluate(() => !!document.querySelector('[data-update-install-dialog][open]') || window._starshotMock.status.confirmationPending), false);
+  results.push({ name: 'native ready gate opens dialog; failed cancellation keeps lock; successful delayed cancellation unlocks once; deferred reads do not reopen', pass: true });
 
   await page.click('loc=role:button[name="月白"]');
   await page.click('loc=role:button[name="关闭弹窗"]');
@@ -191,11 +211,23 @@ try {
   await page.keyboard.press('End');
   await page.waitForFunction(() => document.querySelector('input[aria-label="四周留白"]').value === '200');
   await page.click('loc=role:button[name="设置与帮助"]');
+  await page.evaluate(() => {window._starshotMock.captureActive=true;});
   await page.click('loc=role:button[name="安装并重启"]');
+  await page.waitForFunction(() => !document.querySelector('.workspace').inert && document.querySelector('.update-error')?.textContent.includes('正在截图'));
+  assert.equal(await page.evaluate(() => !!document.querySelector('[data-update-install-dialog][open]') || window._starshotMock.status.confirmationPending),false);
+  await page.evaluate(() => {const m=window._starshotMock;m.captureActive=false;m.holdConfirmation=true;m.confirmCount=m.calls.filter(c=>c.command==='set_update_confirmation').length;});
+  await page.click('loc=role:button[name="安装并重启"]');
+  await page.waitForFunction(() => typeof window._starshotMock.finishConfirmation==='function');
+  await page.evaluate(() => document.querySelector('.update-actions .primary').click());
+  assert.deepEqual(await page.evaluate(() => {const m=window._starshotMock;return {locked:document.querySelector('.workspace').inert,open:!!document.querySelector('[data-update-install-dialog][open]'),confirmCalls:m.calls.filter(c=>c.command==='set_update_confirmation').length-m.confirmCount};}),{locked:true,open:false,confirmCalls:1});
+  assert.deepEqual(await page.evaluate(() => window._starshotMock.calls.filter(c=>c.command==='set_update_confirmation').at(-1).args),{expectedVersion:candidateVersion,pending:true});
+  await page.evaluate(() => {window._starshotMock.finishConfirmation();delete window._starshotMock.finishConfirmation;});
   await page.waitForSelector('loc=css:[data-update-install-dialog][open]', { state: 'visible' });
   await page.click('loc=role:button[name="稍后安装"]');
   await page.waitForFunction(() => !document.querySelector('[data-update-install-dialog][open]') && !document.querySelector('.workspace').inert);
   await page.click('loc=role:button[name="安装并重启"]');
+  await page.waitForSelector('loc=css:[data-update-install-dialog][open]', { state: 'visible' });
+  results.push({ name: 'active capture rejects reopening; pending confirmation freezes UI and deduplicates clicks; only native success opens the dialog for the fixed version', pass: true });
   await page.evaluate(() => {window._starshotMock.installFailure=true;});
   await page.click('loc=css:[data-update-install-dialog][open] .primary');
   await page.waitForFunction(() => document.querySelector('[data-update-install-dialog] [role="alert"]')?.textContent.includes('安装前备份失败') && !document.querySelector('[data-update-install-dialog] .primary').disabled);

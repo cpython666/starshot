@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { appVersion, initialUpdateStatus, watchStarshotUpdates, type UpdateStatus, type UpdateTransport } from '../src/update-api.ts';
-import { downloadProgress, fileSize, updateCanInstall, updateInProgress, updateNeedsRestart } from '../src/update-state.ts';
+import { downloadProgress, fileSize, updateCanInstall, updateInProgress, updateIsReady, updateNeedsRestart } from '../src/update-state.ts';
 
 const state = (revision: number, phase: UpdateStatus['phase'] = 'idle'): UpdateStatus => ({ ...initialUpdateStatus(), revision, phase });
 
@@ -37,6 +37,10 @@ test('download sends only the selected version; installation is a separate expli
   const monitor = watchStarshotUpdates(() => {}, transport);
   await monitor.download('3.0.1');
   assert.deepEqual(calls, ['subscribe', ['download_starshot_update', { expectedVersion: '3.0.1' }]]);
+  await monitor.confirm('3.0.1', false);
+  assert.deepEqual(calls.at(-1), ['set_update_confirmation', { expectedVersion: '3.0.1', pending: false }]);
+  await monitor.confirm('3.0.1', true);
+  assert.deepEqual(calls.at(-1), ['set_update_confirmation', { expectedVersion: '3.0.1', pending: true }]);
   await monitor.install('3.0.1', '{"latestEdits":true}');
   assert.deepEqual(calls.at(-1), ['install_starshot_update', { expectedVersion: '3.0.1', session: '{"latestEdits":true}' }]);
   assert.equal(calls.filter(call => call === 'subscribe').length, 1);
@@ -44,10 +48,12 @@ test('download sends only the selected version; installation is a separate expli
 });
 
 test('only a verified cached candidate permits installation, including retries after a backup failure', () => {
-  const ready = { ...state(1, 'ready'), available: { version: '3.0.1' }, downloadReady: true };
+  const ready = { ...state(1, 'ready'), available: { version: '3.0.1' }, downloadReady: true, confirmationPending: true };
   assert.equal(updateCanInstall(ready), true);
   assert.equal(updateInProgress(ready), false);
   assert.equal(updateNeedsRestart(ready), false);
+  assert.equal(updateCanInstall({ ...ready, confirmationPending: false }), false);
+  assert.equal(updateIsReady({ ...ready, confirmationPending: false }), true);
   assert.equal(updateCanInstall({ ...ready, phase: 'error' }), true);
   assert.equal(updateCanInstall({ ...ready, downloadReady: false }), false);
   assert.equal(updateCanInstall({ ...ready, available: null }), false);
@@ -59,6 +65,7 @@ test('only a verified cached candidate permits installation, including retries a
 
 test('progress and write protection cover unknown totals, overshoot and pending restart', () => {
   assert.equal(initialUpdateStatus().currentVersion, appVersion);
+  assert.equal(initialUpdateStatus().confirmationPending, false);
   assert.equal(downloadProgress({ ...state(1), downloaded: 50 }), undefined);
   assert.equal(downloadProgress({ ...state(1), downloaded: 50, total: 100 }), 50);
   assert.equal(downloadProgress({ ...state(1), downloaded: 150, total: 100 }), 100);
