@@ -25,6 +25,7 @@
 - 保存先完整编码，再在目标同目录创建临时文件、fsync、原子替换；失败保留旧目标。JPEG以白底合成透明像素。取消原生对话框不提交编辑或丢失当前图。
 - macOS系统占用Cmd+Shift+3；贴原图使用 `CommandOrControl+Alt+3`，开始截图 `CommandOrControl+Shift+2`。实际冲突通过UI报错，不使启动失败。
 - 新图最近会话最多6张、原图合计48MP；最多60个撤销步骤。预算不包含背景/临时渲染/快照，不代表进程硬内存上限。贴图最多12张。
+- 用户反馈菜单栏原图标难辨认（2026-10-26）。托盘不再复用带底板的应用图标：`public/tray-template.svg`生成36px黑色透明模板，macOS启用icon_as_template；`public/tray-contrast.svg`生成32px紫色/白边图标供Windows。源码接入desktop.rs，已有image依赖负责解码，无新增依赖。生成命令为 `npm run tauri -- icon public/tray-template.svg --output src-tauri/icons/tray-template --png 36`，另一份替换为tray-contrast和32。当前修补版0.2.1；系统实机效果与设计预览分开记录。
 
 ## 回归方式
 

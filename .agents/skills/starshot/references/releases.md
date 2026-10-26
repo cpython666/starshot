@@ -2,7 +2,7 @@
 
 用户于2026-10-26明确要求迁入星笺的更新与版本机制、关联远端，并确认公开仓库提供更新下载。仓库为 https://github.com/cpython666/starshot。详细操作和验收边界在 docs/releases.md / docs/verification.md。
 
-- 版本由 scripts/version.mjs 校验/递增，同步 npm/Cargo/Tauri 六个版本字段；标签必须 vX.Y.Z。当前开发版本0.2.0；旧0.1.0无updater，须手动升级。
+- 版本由 scripts/version.mjs 校验/递增，同步 npm/Cargo/Tauri 六个版本字段；标签必须 vX.Y.Z。当前开发版本0.2.1，修复托盘图标；旧0.1.0无updater，须手动升级。
 - src-tauri/src/updater.rs 与 desktop.rs 使用官方 Tauri updater，限制本仓库下载地址，要求更新签名绑定版本。检查手动触发，无启动联网。先验签，再写会话恢复点与旧应用副本，最后安装；失败不伪报成功。
 - 更新/recovery IPC 仅主窗口；捕获、贴图窗口不授予 updater 插件直通权限。忙时后端拒绝图像操作；Windows on_before_exit 先释放单实例锁再 cleanup。清理后安装器启动失败必须使用预缓存Env做进程级重启，不能再用AppHandle状态或事件，否则应用可能隐藏且无托盘。基于当前Tauri/插件源码核对与编译，此失败路径仍待Windows实机验收。
 - src/update-api.ts 单订阅、revision防陈旧响应、延迟订阅销毁；UpdateSettings.vue 固定确认版本、持有编辑锁，展示阶段/进度/错误；App.vue阻断导入/截图/编辑及慢回调。

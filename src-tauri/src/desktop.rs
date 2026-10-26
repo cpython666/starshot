@@ -836,7 +836,22 @@ pub fn run() {
             let close = MenuItem::with_id(app, "close-pins", "关闭全部贴图", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出星镜", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &capture, &pin, &recover, &close, &quit])?;
-            let mut tray = TrayIconBuilder::with_id("starshot-tray")
+            // Tray glyphs need a transparent, readable silhouette at menu-bar sizes.
+            // macOS recolors its alpha mask; other platforms use a light/dark outline.
+            let tray_bytes: &[u8] = if cfg!(target_os = "macos") {
+                include_bytes!("../icons/tray-template/36x36.png")
+            } else {
+                include_bytes!("../icons/tray-contrast/32x32.png")
+            };
+            let pixels = image::load_from_memory(tray_bytes)?.into_rgba8();
+            let (width, height) = pixels.dimensions();
+            let tray = TrayIconBuilder::with_id("starshot-tray")
+                .icon(tauri::image::Image::new_owned(
+                    pixels.into_raw(),
+                    width,
+                    height,
+                ))
+                .icon_as_template(cfg!(target_os = "macos"))
                 .tooltip("星镜 Starshot")
                 .menu(&menu)
                 .show_menu_on_left_click(true)
@@ -879,9 +894,6 @@ pub fn run() {
                     }
                     _ => {}
                 });
-            if let Some(icon) = app.default_window_icon() {
-                tray = tray.icon(icon.clone());
-            }
             tray.build(app)?;
             Ok(())
         })
