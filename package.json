@@ -1,6 +1,6 @@
 {
   "name": "starshot",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +10,8 @@
     "test": "node --experimental-strip-types --test tests/*.test.ts",
     "tauri": "tauri",
     "version:check": "node scripts/version.mjs check",
-    "version:bump": "node scripts/version.mjs bump"
+    "version:bump": "node scripts/version.mjs bump",
+    "models:prepare": "node scripts/prepare-ocr-models.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",

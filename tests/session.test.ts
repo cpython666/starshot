@@ -6,7 +6,7 @@ import { parseSession, prepareSession, restoreWithBackup, serializeSession, type
 // Original fixed one-pixel fixture; no filesystem or clipboard content is read.
 const pixel = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg==';
 function fixture(): Session {
-  return { schemaVersion: 1, theme: 'moon', currentId: 'first', documents: [{
+  return { schemaVersion: 2, theme: 'moon', currentId: 'first', documents: [{
     id: 'first', name: '原创示例.png', dataUrl: pixel, width: 1, height: 1,
     state: { annotations: [{ id: 'a', type: 'arrow', x: 1, y: 1, width: -1, height: -1, color: '#abc', lineWidth: 5, points: [{ x: 1, y: 1 }] }], crop: { x: 0, y: 0, width: 1, height: 1 }, style: { ...DEFAULT_STYLE, background: 'image' }, backgroundDataUrl: pixel },
   }] };
@@ -22,11 +22,11 @@ test('session round trip retains complete editable state and theme without incid
   const saved = serializeSession(session);
   assert.deepEqual(parseSession(saved), fixture());
   assert.ok(!saved.includes('undo') && !saved.includes('runtime image'));
-  assert.deepEqual(parseSession(serializeSession({ schemaVersion: 1, theme: 'sakura', currentId: '', documents: [] })), { schemaVersion: 1, theme: 'sakura', currentId: '', documents: [] });
+  assert.deepEqual(parseSession(serializeSession({ schemaVersion: 2, theme: 'sakura', currentId: '', documents: [] })), { schemaVersion: 2, theme: 'sakura', currentId: '', documents: [] });
 });
 
 test('invalid schema, ids, source links, styles and crops fail before image decoding', () => {
-  rejected(s => s.schemaVersion = 2, /会话版本/);
+  rejected(s => s.schemaVersion = 3, /会话版本/);
   rejected(s => s.theme = 'injected', /界面外观/);
   rejected(s => s.currentId = 'missing', /当前图片不存在/);
   rejected(s => s.documents.push(s.documents[0]), /编号重复/);
@@ -79,4 +79,53 @@ test('restore snapshots current edits before reading/applying old state and abor
   order.length = 0;
   await assert.rejects(restoreWithBackup({ ...actions, read: async () => 'damaged data' }), /JSON/);
   assert.deepEqual(order, ['snapshot current', 'backup current']);
+});
+
+test('schema2 retains sticker/redaction objects and decodes each sticker source once before restoring', async () => {
+  const session = fixture();
+  const base = { x: 0, y: 0, width: 1, height: 1, color: '#123456', lineWidth: 1 };
+  session.documents[0]!.state.annotations = [
+    { ...base, id: 'sticker-1', type: 'sticker', dataUrl: pixel, rotation: 90 },
+    { ...base, id: 'sticker-2', type: 'sticker', dataUrl: pixel },
+    { ...base, id: 'mask', type: 'redact' },
+  ];
+  const serialized = serializeSession(session);
+  assert.deepEqual(parseSession(serialized), session);
+  const limits: number[] = [];
+  const prepared = await prepareSession(serialized, async (_data, limit) => { limits.push(limit); return { width: 1, height: 1 }; });
+  assert.deepEqual(limits, [40_000_000, 24_000_000, 2_000_000]);
+  assert.equal(prepared.stickers.size, 1);
+  assert.deepEqual(prepared.stickers.get(pixel), { width: 1, height: 1 });
+  await assert.rejects(prepareSession(serialized, async (_data, limit) => ({ width: limit === 2_000_000 ? 2 : 1, height: 1 })), /贴纸尺寸/);
+  await assert.rejects(prepareSession(serialized, async (_data, limit) => { if (limit === 2_000_000) throw Error('PNG decode failed'); return { width: 1, height: 1 }; }), /PNG decode failed/);
+});
+
+test('schema1 restores old editable data into schema2 without rewriting the supplied bytes', () => {
+  const legacy = JSON.stringify({ ...fixture(), schemaVersion: 1 });
+  const prepared = parseSession(legacy);
+  assert.deepEqual(prepared, fixture());
+  assert.equal(JSON.parse(legacy).schemaVersion, 1);
+  assert.equal(JSON.parse(serializeSession(prepared)).schemaVersion, 2);
+  rejected(s => {
+    s.schemaVersion = 1;
+    s.documents[0].state.annotations = [{ id: 'new-object', type: 'redact', x: 0, y: 0, width: 1, height: 1, color: '#000', lineWidth: 1 }];
+  }, /旧会话版本/);
+});
+
+test('sticker fields and resource budgets are checked across all session documents', () => {
+  const sticker = { id: 'sticker', type: 'sticker', x: 0, y: 0, width: 1, height: 1, color: '#000', lineWidth: 1, dataUrl: pixel, rotation: 0 };
+  const change = (update: (a: any) => void) => rejected(s => { s.documents[0].state.annotations = [structuredClone(sticker)]; update(s.documents[0].state.annotations[0]); }, /贴纸|遮挡/);
+  change(a => delete a.dataUrl);
+  change(a => a.dataUrl = 'https://example.com/private.png');
+  change(a => a.rotation = -1);
+  change(a => a.rotation = 361);
+  change(a => a.width = 0);
+  change(a => { a.type = 'redact'; a.height = -1; });
+  const bytes = Buffer.from(pixel.split(',')[1]!, 'base64');
+  bytes.writeUInt32BE(2000, 16); bytes.writeUInt32BE(1000, 20);
+  const large = { ...sticker, dataUrl: `data:image/png;base64,${bytes.toString('base64')}` };
+  rejected(s => {
+    s.documents[0].state.annotations = Array.from({ length: 3 }, (_, i) => ({ ...large, id: `a${i}` }));
+    s.documents.push({ ...s.documents[0], id: 'second', state: { ...s.documents[0].state, annotations: [{ ...large, id: 'a3' }, { ...large, id: 'a4' }] } });
+  }, /800 万/);
 });

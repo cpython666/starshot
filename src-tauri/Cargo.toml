@@ -1,6 +1,6 @@
 [package]
 name = "starshot"
-version = "0.2.2"
+version = "0.3.0"
 description = "星镜 Starshot — 本地截图、贴图与图片美化"
 edition = "2021"
 rust-version = "1.90"
@@ -17,7 +17,7 @@ required-features = ["desktop"]
 
 [features]
 default = ["desktop"]
-desktop = ["dep:tauri", "dep:tauri-build", "dep:xcap", "dep:arboard", "dep:tauri-plugin-dialog", "dep:tauri-plugin-global-shortcut", "dep:tauri-plugin-single-instance", "dep:tauri-plugin-updater"]
+desktop = ["dep:tauri", "dep:tauri-build", "dep:xcap", "dep:arboard", "dep:tauri-plugin-dialog", "dep:tauri-plugin-global-shortcut", "dep:tauri-plugin-single-instance", "dep:tauri-plugin-updater", "dep:tauri-plugin-autostart", "dep:objc2", "dep:objc2-foundation", "dep:objc2-vision", "dep:ocrs", "dep:rten"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -32,7 +32,15 @@ arboard = { version = "3.6", default-features = false, features = ["image-data"]
 tauri-plugin-dialog = { version = "2", optional = true }
 tauri-plugin-global-shortcut = { version = "2", optional = true }
 tauri-plugin-single-instance = { version = "2", optional = true }
+tauri-plugin-autostart = { version = "2", optional = true }
 tauri-plugin-updater = { version = "2.10", optional = true }
+ocrs = { version = "=0.12.2", default-features = false, optional = true }
+rten = { version = "=0.24.0", default-features = false, features = ["rten_format"], optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6.5", optional = true }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSDictionary", "NSString"], optional = true }
+objc2-vision = { version = "0.3.2", default-features = false, features = ["std", "VNRequest", "VNRequestHandler", "VNRecognizeTextRequest", "VNObservation", "objc2-core-foundation"], optional = true }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [], optional = true }

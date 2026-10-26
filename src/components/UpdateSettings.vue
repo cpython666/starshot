@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { invoke } from '@tauri-apps/api/core';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { createRecoveryPoint, initialUpdateStatus, listRecoveryPoints, readRecoveryPoint, restartAfterUpdate, updateDesktopAvailable, watchStarshotUpdates } from '../update-api';
 import type { RecoveryPoint, UpdateStatus } from '../update-api';
@@ -6,10 +7,11 @@ import { downloadProgress, fileSize, updateInProgress, updateNeedsRestart, updat
 import { restoreWithBackup } from '../session';
 
 const props = defineProps<{ disabled?: boolean; getSession: () => Promise<string>; restoreSession: (serialized: string) => Promise<void> }>();
-const emit = defineEmits<{ busy: [value: boolean]; status: [value: UpdateStatus]; 'recovery-available': [point: RecoveryPoint | null] }>();
+const emit = defineEmits<{ busy: [value: boolean]; status: [value: UpdateStatus]; 'backed-up': []; 'recovery-available': [point: RecoveryPoint | null] }>();
 const status = ref(initialUpdateStatus()), statusLoaded = ref(false);
+const storage = ref<{recoveryBytes:number;applicationBytes:number;totalBytes:number}|null>(null), deleteSelected = ref<RecoveryPoint|null>(null);
 const points = ref<RecoveryPoint[]>([]), pointsLoaded = ref(false);
-const operation = ref<'load' | 'check' | 'download' | 'confirm' | 'install' | 'snapshot' | 'restore' | 'restart' | null>(null);
+const operation = ref<'load' | 'check' | 'download' | 'confirm' | 'install' | 'snapshot' | 'restore' | 'restart' | 'delete' | null>(null);
 const error = ref(''), recoveryError = ref(''), notice = ref('');
 const installVersion = ref<string | null>(null), restoreSelected = ref<RecoveryPoint | null>(null);
 const confirmation = ref<HTMLElement>(), installDialog = ref<HTMLDialogElement>();
@@ -17,14 +19,14 @@ let disposed = false;
 const monitor = watchStarshotUpdates(value => { status.value = value; statusLoaded.value = true; emit('status', value); });
 const needsRestart = computed(() => updateNeedsRestart(status.value));
 const working = computed(() => operation.value !== null || updateInProgress(status.value));
-const confirming = computed(() => status.value.confirmationPending || !!installVersion.value || !!restoreSelected.value);
+const confirming = computed(() => status.value.confirmationPending || !!installVersion.value || !!restoreSelected.value || !!deleteSelected.value);
 const blocked = computed(() => props.disabled || working.value || needsRestart.value);
 const progress = computed(() => downloadProgress(status.value));
 const canInstall = computed(() => updateCanInstall(status.value));
 const hasDownload = computed(() => updateIsReady(status.value));
 const canDownload = computed(() => !!status.value.available && !status.value.downloadReady && ['available', 'error'].includes(status.value.phase));
 const upgradePoint = computed(() => points.value.find(point => point.reason === 'before-update' && point.compatible));
-watch(() => confirming.value || needsRestart.value || updateInProgress(status.value) || ['confirm', 'install', 'snapshot', 'restore', 'restart'].includes(operation.value || ''), value => emit('busy', value), { immediate: true, flush: 'sync' });
+watch(() => confirming.value || needsRestart.value || updateInProgress(status.value) || ['confirm', 'install', 'snapshot', 'restore', 'restart', 'delete'].includes(operation.value || ''), value => emit('busy', value), { immediate: true, flush: 'sync' });
 // The native confirmation gate protects global shortcuts as well as this editor.
 watch(status, value => {
   if (updateCanInstall(value) && !restoreSelected.value) {
@@ -60,9 +62,10 @@ function refresh() {
   if (confirming.value) return;
   return perform('load', async () => {
     recoveryError.value = '';
-    const results = await Promise.allSettled([monitor.read(), listRecoveryPoints()]);
+    const results = await Promise.allSettled([monitor.read(), listRecoveryPoints(), invoke<{recoveryBytes:number;applicationBytes:number;totalBytes:number}>('get_recovery_storage')]);
     if (disposed) return;
-    const [update, recovery] = results;
+    const [update, recovery, usage] = results;
+    if(usage.status==='fulfilled')storage.value=usage.value;
     if (update.status === 'rejected') error.value = `更新状态读取失败：${message(update.reason)}`;
     if (recovery.status === 'fulfilled') {
       points.value = recovery.value; pointsLoaded.value = true;
@@ -120,7 +123,7 @@ function createSnapshot() {
   if (confirming.value) return;
   return perform('snapshot', async () => {
     const point = await createRecoveryPoint(await props.getSession());
-    if (!disposed) { addPoint(point); notice.value = '当前会话已保存为本机恢复点。'; }
+    if (!disposed) { addPoint(point); emit('backed-up'); void refreshStorage(); notice.value = '当前会话已保存为本机恢复点。'; }
   });
 }
 function restore() {
@@ -134,10 +137,15 @@ function restore() {
       apply: props.restoreSession,
     });
     if (!disposed) {
-      restoreSelected.value = null; emit('recovery-available', null);
+      restoreSelected.value = null; emit('recovery-available', null); emit('backed-up'); void refreshStorage();
       notice.value = '已恢复原图、标注、裁剪、背景和界面外观。恢复前的会话已另存为恢复点；撤销历史从此处重新开始。';
     }
   });
+}
+async function refreshStorage(){try{storage.value=await invoke('get_recovery_storage')}catch{/* Listing and restoring remain available if statistics fail. */}}
+function deletePoint(){
+  const point=deleteSelected.value;if(!point)return;
+  return perform('delete',async()=>{await invoke('delete_recovery_point',{id:point.id});if(disposed)return;points.value=points.value.filter(p=>p.id!==point.id);deleteSelected.value=null;await refreshStorage();notice.value='已删除选中的本机备份。';emit('recovery-available',upgradePoint.value||null)})
 }
 function restart() {
   return perform('restart', async () => {
@@ -147,6 +155,7 @@ function restart() {
   });
 }
 onMounted(() => { if (updateDesktopAvailable) void refresh(); });
+watch(() => props.disabled, (disabled, previous) => { if (!disabled && previous && !statusLoaded.value && updateDesktopAvailable) void refresh(); });
 onBeforeUnmount(() => { disposed = true; installDialog.value?.close(); monitor.dispose(); emit('busy', false); });
 </script>
 
@@ -196,12 +205,12 @@ onBeforeUnmount(() => { disposed = true; installDialog.value?.close(); monitor.d
         <p class="update-hint">保存当前会话中最多 6 张原图及各自标注、裁剪、背景、外观。不包含撤销历史。普通编辑只留在内存，手动备份或安装更新时才落盘。</p>
         <div v-if="upgradePoint" class="update-card"><strong>有一份升级前会话可恢复</strong><p>{{ date(upgradePoint.createdAt) }} · v{{ upgradePoint.appVersion }}。请在下方选择恢复；不会自动读取图片。</p></div>
         <button class="button" :disabled="blocked || confirming" @click="createSnapshot">{{ operation === 'snapshot' ? '正在保存…' : '备份当前会话' }}</button>
-        <p v-if="pointsLoaded && !points.length" class="update-hint">还没有恢复点。可以手动备份，安装更新前也会保存。</p>
+        <p v-if="storage" class="update-hint">备份总占用 {{fileSize(storage.totalBytes)}} · 编辑会话 {{fileSize(storage.recoveryBytes)}} · 旧应用 {{fileSize(storage.applicationBytes)}}</p><div v-if="deleteSelected" class="update-confirmation"><strong>删除这份本机备份？</strong><p>同时删除对应的旧应用副本，不影响当前编辑。删除后无法恢复这份备份。</p><div class="update-actions"><button class="button" :disabled="blocked" @click="deleteSelected=null">取消删除</button><button class="button" :disabled="blocked" @click="deletePoint">确认删除备份</button></div></div><p v-if="pointsLoaded && !points.length" class="update-hint">还没有恢复点。可以手动备份，安装更新前也会保存。</p>
         <ul v-if="points.length" class="recovery-list" aria-label="本机恢复点">
           <li v-for="point in points" :key="point.id" class="update-card">
             <div class="recovery-row"><div><strong>{{ date(point.createdAt) }}</strong><span>{{ reasonLabel(point.reason) }} · v{{ point.appVersion }} · {{ fileSize(point.totalBytes) }}</span></div><button class="button" :disabled="blocked || confirming || !point.compatible" @click="confirmRestore(point)">恢复此会话</button></div>
             <p v-if="!point.compatible" class="update-error">此恢复点无法恢复，可能已损坏或由不兼容的新版创建。</p>
-            <details><summary>查看保存位置</summary><code>{{ point.path }}</code></details>
+            <div class="update-actions"><span class="update-hint">旧应用 {{point.applicationBytes==null?'未知':fileSize(point.applicationBytes)}}</span><button class="button" :disabled="blocked||confirming" @click="deleteSelected=point">删除备份</button></div><p v-if="point.storageError" class="update-hint">部分占用无法统计：{{point.storageError}}</p><details><summary>查看保存位置</summary><code>{{ point.path }}</code></details>
           </li>
         </ul>
         <div v-if="restoreSelected && !needsRestart" ref="confirmation" class="update-confirmation" tabindex="-1" role="region" aria-label="确认恢复会话">

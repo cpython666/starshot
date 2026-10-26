@@ -21,6 +21,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
+      - run: npm run models:prepare
       - run: npm run version:check
       - name: Install the signature verifier
         run: sudo apt-get update && sudo apt-get install --yes minisign
@@ -58,6 +59,7 @@ jobs:
         with:
           workspaces: src-tauri -> target
       - run: npm ci --no-audit --no-fund
+      - run: npm run models:prepare
       - run: npm run version:check
       - run: npm test
       - run: npm run build
@@ -70,6 +72,23 @@ jobs:
         env:
           APPLE_SIGNING_IDENTITY: '-'
         run: npm run tauri build -- --target '${{ matrix.target }}' --bundles '${{ matrix.bundles }}' --config '{"bundle":{"createUpdaterArtifacts":false}}'
+      - name: Verify the offline OCR worker with original pixels
+        if: runner.os == 'Windows'
+        run: python tests/ocr-worker-smoke.py src-tauri/target/${{ matrix.target }}/release/starshot.exe
+      - name: Verify isolated Windows installation and uninstallation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem 'src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe')
+          if ($installers.Count -ne 1) { throw 'Expected exactly one final NSIS installer.' }
+          ./tests/windows-installer-smoke.ps1 -InstallerPath $installers[0].FullName
+      - name: Preserve Windows installation evidence
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-smoke-verify
+          path: artifacts/windows-installer-smoke/
+          if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}

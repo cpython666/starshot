@@ -22,3 +22,7 @@ src-tauri/icons/ios/
 *.p12
 recovery/
 application-backups/
+
+# Pinned build assets, downloaded by npm run models:prepare.
+src-tauri/models/ocrs/*.rten
+src-tauri/models/ocrs/*.download-*

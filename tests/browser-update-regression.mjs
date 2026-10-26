@@ -40,6 +40,9 @@ const source = '(' + function ({ currentVersion, candidateVersion }) {
       if(command==='plugin:event|unlisten'){listeners.delete(args.eventId);return;}
       if(command==='get_current_image')return null;
       if(command==='get_app_status')return {captureAvailable:true};
+      if(command==='get_desktop_settings')return {captureShortcut:'CommandOrControl+Shift+2',pinShortcut:'CommandOrControl+Alt+3',startInTray:false,autostart:false};
+      if(command==='set_editor_state')return;
+      if(command==='get_recovery_storage')return {recoveryBytes:0,applicationBytes:0,totalBytes:0};
       if(command==='get_update_status')return {...mock.status};
       if(command==='list_recovery_points')return [...mock.points];
       if(command==='check_starshot_update'){mock.emit({revision:mock.status.revision+1,phase:'available',downloadReady:false,confirmationPending:false,error:null,available:{version:candidateVersion,notes:'原创测试更新说明 <img src=x onerror=alert(1)>',date:'2026-10-26T00:00:00Z'}});return {...mock.status};}
@@ -99,10 +102,10 @@ try {
     const s = JSON.parse(call.args.session);
     return { schema: s.schemaVersion, count: s.documents.length, name: s.documents[0].name, width: s.documents[0].width, height: s.documents[0].height, hasUndo: 'undo' in s.documents[0] };
   });
-  assert.deepEqual(saved, { schema: 1, count: 1, name: '灵感手记 · 原创示例.png', width: 1200, height: 750, hasUndo: false });
+  assert.deepEqual(saved, { schema: 2, count: 1, name: '灵感手记 · 原创示例.png', width: 1200, height: 750, hasUndo: false });
   results.push({ name: 'startup offers recovery without loading images; explicit backup captures original dimensions', pass: true });
 
-  await page.click('loc=css:.recovery-list li:last-child button');
+  await page.click('loc=css:.recovery-list li:last-child .recovery-row button');
   await page.waitForSelector('loc=role:region[name="确认恢复会话"]', { state: 'visible' });
   await page.keyboard.press('Escape');
   await page.keyboard.press('ControlOrMeta+o');
@@ -124,7 +127,7 @@ try {
     window._starshotMock.backupFailure = true;
     window._readCount = window._starshotMock.calls.filter(c => c.command === 'read_recovery_point').length;
   });
-  await page.click('loc=css:.recovery-list li:last-child button');
+  await page.click('loc=css:.recovery-list li:last-child .recovery-row button');
   await page.click('loc=role:button[name="备份当前会话并恢复"]');
   await page.waitForFunction(() => document.querySelector('.update-error')?.textContent?.includes('备份磁盘不可用'));
   assert.equal(await page.evaluate(() => window._readCount === window._starshotMock.calls.filter(c => c.command === 'read_recovery_point').length && document.querySelector('.document-title').textContent.includes('灵感手记')), true);
@@ -149,6 +152,7 @@ try {
   await page.waitForFunction(() => document.querySelector('.update-notice')?.textContent?.includes('当前会话已保存'));
   assert.equal(await page.evaluate(() => {
     const m = window._starshotMock, actual = JSON.parse(m.calls.filter(c => c.command === 'create_recovery_point').at(-1).args.session), expected = JSON.parse(m.originalSession);
+    expected.schemaVersion = 2; // Old files stay schema1; newly saved sessions use the current schema.
     const canonical = v => Array.isArray(v) ? v.map(canonical) : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map(k => [k, canonical(v[k])])) : v;
     return JSON.stringify(canonical(actual)) === JSON.stringify(canonical(expected));
   }), true);

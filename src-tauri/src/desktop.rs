@@ -1,5 +1,6 @@
+use crate::desktop_settings::{self, DesktopSettings, DesktopSettingsStatus};
 use crate::imaging::{self, ImagePayload, Rect};
-use crate::recovery::{self, RecoveredSession, RecoveryPoint};
+use crate::recovery::{self, RecoveredSession, RecoveryPoint, RecoveryStorage};
 use crate::updater::{self, UpdateStatus, Updates};
 use image::{DynamicImage, ImageFormat};
 use serde::Serialize;
@@ -18,13 +19,57 @@ use tauri::{
     tray::TrayIconBuilder,
     AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
+use tauri_plugin_autostart::ManagerExt as AutostartExt;
 use tauri_plugin_dialog::DialogExt;
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_plugin_updater::UpdaterExt;
 
 type Result<T> = std::result::Result<T, String>;
-const CAPTURE_SHORTCUT: &str = "CommandOrControl+Shift+2";
-const PIN_SHORTCUT: &str = "CommandOrControl+Alt+3";
+
+// Unknown frontend state is intentionally unsafe to discard, including during WebView startup.
+#[derive(Default)]
+struct EditorLifecycle {
+    reported: bool,
+    has_session: bool,
+    dirty: bool,
+    busy: bool,
+    exit_pending: bool,
+    exit_approved: bool,
+    exit_announced: bool,
+    release_request: Option<u64>,
+    released: bool,
+    release_startup_when_ready: bool,
+}
+impl EditorLifecycle {
+    fn empty_idle(&self) -> bool {
+        self.reported && !self.has_session && !self.dirty && !self.busy && !self.exit_pending
+    }
+    fn update(&mut self, has_session: bool, dirty: bool, busy: bool) {
+        self.reported = true;
+        self.has_session = has_session;
+        self.dirty = dirty;
+        self.busy = busy;
+        if has_session || dirty || busy {
+            self.release_request = None;
+        }
+    }
+    fn confirm_exit(&mut self) -> Result<()> {
+        if !self.exit_pending || !self.reported || self.busy {
+            return Err("编辑状态尚未就绪或正在处理，请稍后重试退出".into());
+        }
+        self.exit_approved = true;
+        Ok(())
+    }
+    fn release(&mut self, request: u64) -> Result<()> {
+        if !self.empty_idle() || self.release_request != Some(request) {
+            return Err("编辑状态已变化，保留编辑器".into());
+        }
+        self.release_request = None;
+        self.released = true;
+        self.reported = false;
+        Ok(())
+    }
+}
 
 #[derive(Clone, Serialize)]
 struct Region {
@@ -53,6 +98,20 @@ struct Context {
     pins: Mutex<HashMap<String, ImagePayload>>,
     sequence: AtomicU64,
     shortcut_error: Mutex<Option<String>>,
+    settings: Mutex<DesktopSettings>,
+    editor: Mutex<EditorLifecycle>,
+    last_saved: Mutex<Option<std::path::PathBuf>>,
+}
+impl Context {
+    fn ensure_not_exiting(&self) -> Result<()> {
+        let mut editor = lock(&self.editor)?;
+        if editor.exit_pending {
+            Err("请先完成或取消退出确认".into())
+        } else {
+            editor.release_request = None;
+            Ok(())
+        }
+    }
 }
 fn lock<T>(value: &Mutex<T>) -> Result<MutexGuard<'_, T>> {
     value.lock().map_err(|_| "操作状态异常，请重启星镜".into())
@@ -65,11 +124,35 @@ fn main_only(window: &WebviewWindow) -> Result<()> {
     }
 }
 fn show_main(app: &AppHandle) {
-    if let Some(main) = app.get_webview_window("main") {
-        let _ = main.show();
-        let _ = main.unminimize();
-        let _ = main.set_focus();
-    }
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let main = handle.get_webview_window("main").or_else(|| {
+            let config = handle
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|config| config.label == "main")?;
+            if let Ok(mut editor) = handle.state::<Context>().editor.lock() {
+                editor.released = false;
+                editor.reported = false;
+                editor.release_request = None;
+            }
+            WebviewWindowBuilder::from_config(&handle, config)
+                .ok()?
+                .build()
+                .ok()
+        });
+        if let Some(main) = main {
+            if let Ok(mut editor) = handle.state::<Context>().editor.lock() {
+                editor.release_request = None;
+                editor.release_startup_when_ready = false;
+            }
+            let _ = main.show();
+            let _ = main.unminimize();
+            let _ = main.set_focus();
+        }
+    });
 }
 fn report_error(app: &AppHandle, error: &str) {
     show_main(app);
@@ -117,6 +200,7 @@ fn begin_capture(app: &AppHandle) -> Result<()> {
         .operation
         .try_lock()
         .map_err(|_| "另一项截图操作仍在进行")?;
+    context.ensure_not_exiting()?;
     app.state::<Updates>().ensure_idle()?;
     if !lock(&context.frames)?.is_empty() {
         return Err("请先完成或取消当前截图".into());
@@ -295,6 +379,7 @@ async fn finish_capture(app: AppHandle, window: WebviewWindow, rect: Rect) -> Re
     tauri::async_runtime::spawn_blocking(move || {
         let context = app.state::<Context>();
         let _operation = lock(&context.operation)?;
+        context.ensure_not_exiting()?;
         app.state::<Updates>().ensure_idle()?;
         let result = {
             let frames = lock(&context.frames)?;
@@ -351,6 +436,7 @@ async fn save_image(
     tauri::async_runtime::spawn_blocking(move || {
         let context = app.state::<Context>();
         let _operation = lock(&context.operation)?;
+        context.ensure_not_exiting()?;
         app.state::<Updates>().ensure_idle()?;
         let image = imaging::decode_data_url(&data_url)?;
         let name = imaging::filename(&suggested_name);
@@ -401,6 +487,7 @@ async fn save_image(
         }
         // Same-directory staging makes replacement atomic on macOS and Windows.
         imaging::atomic_save(&path, encoded.get_ref())?;
+        *lock(&context.last_saved)? = Some(path.clone());
         Ok(Some(path.to_string_lossy().into_owned()))
     })
     .await
@@ -412,6 +499,7 @@ async fn copy_image(app: AppHandle, window: WebviewWindow, data_url: String) -> 
     tauri::async_runtime::spawn_blocking(move || {
         let context = app.state::<Context>();
         let _operation = lock(&context.operation)?;
+        context.ensure_not_exiting()?;
         app.state::<Updates>().ensure_idle()?;
         let image = imaging::decode_data_url(&data_url)?.into_rgba8();
         arboard::Clipboard::new()
@@ -426,9 +514,54 @@ async fn copy_image(app: AppHandle, window: WebviewWindow, data_url: String) -> 
     .await
     .map_err(|_| "复制图片任务异常")?
 }
+#[tauri::command]
+async fn copy_text(app: AppHandle, window: WebviewWindow, text: String) -> Result<()> {
+    main_only(&window)?;
+    if text.trim().is_empty() || text.len() > 8192 {
+        return Err("复制文字应为非空且不超过 8 KiB".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let context = app.state::<Context>();
+        let _operation = lock(&context.operation)?;
+        context.ensure_not_exiting()?;
+        app.state::<Updates>().ensure_idle()?;
+        arboard::Clipboard::new()
+            .and_then(|mut clipboard| clipboard.set_text(text))
+            .map_err(|e| format!("文字复制失败：{e}"))
+    })
+    .await
+    .map_err(|_| "文字复制任务异常")?
+}
+#[tauri::command]
+fn reveal_saved_image(app: AppHandle, window: WebviewWindow) -> Result<()> {
+    main_only(&window)?;
+    let path = lock(&app.state::<Context>().last_saved)?
+        .clone()
+        .ok_or("本次运行尚未成功保存图片")?;
+    if !path.is_file() {
+        return Err("已保存的图片已被移动或删除".into());
+    }
+    #[cfg(target_os = "macos")]
+    let child = std::process::Command::new("/usr/bin/open")
+        .arg("-R")
+        .arg(&path)
+        .spawn();
+    #[cfg(target_os = "windows")]
+    let child = std::process::Command::new("explorer.exe")
+        .arg(format!("/select,{}", path.to_string_lossy()))
+        .spawn();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let child = std::process::Command::new("xdg-open")
+        .arg(path.parent().ok_or("图片位置无效")?)
+        .spawn();
+    child
+        .map(|_| ())
+        .map_err(|e| format!("无法打开图片位置：{e}"))
+}
 fn create_pin(app: &AppHandle, data_url: &str) -> Result<()> {
     let context = app.state::<Context>();
     let _operation = lock(&context.operation)?;
+    context.ensure_not_exiting()?;
     app.state::<Updates>().ensure_idle()?;
     let image = imaging::decode_data_url(data_url)?;
     let mut pins = lock(&context.pins)?;
@@ -490,6 +623,7 @@ fn pin_action(
 ) -> Result<()> {
     let context = app.state::<Context>();
     let _operation = lock(&context.operation)?;
+    context.ensure_not_exiting()?;
     app.state::<Updates>().ensure_idle()?;
     let image = lock(&context.pins)?
         .get(window.label())
@@ -546,7 +680,9 @@ fn get_app_status(app: AppHandle, window: WebviewWindow) -> Result<AppStatus> {
     Ok(AppStatus {
         platform: std::env::consts::OS.into(),
         capture_available: permission,
-        shortcut: CAPTURE_SHORTCUT.into(),
+        shortcut: lock(&app.state::<Context>().settings)?
+            .capture_shortcut
+            .clone(),
         error: shortcut_error.or_else(|| {
             if permission {
                 None
@@ -595,6 +731,292 @@ fn no_active_capture(context: &Context) -> Result<()> {
     }
 }
 #[tauri::command]
+fn get_desktop_settings(app: AppHandle, window: WebviewWindow) -> Result<DesktopSettingsStatus> {
+    main_only(&window)?;
+    Ok(DesktopSettingsStatus {
+        preferences: lock(&app.state::<Context>().settings)?.clone(),
+        autostart: app
+            .autolaunch()
+            .is_enabled()
+            .map_err(|e| format!("无法读取系统开机启动状态：{e}"))?,
+    })
+}
+#[tauri::command]
+fn set_desktop_settings(
+    app: AppHandle,
+    window: WebviewWindow,
+    settings: DesktopSettingsStatus,
+) -> Result<DesktopSettingsStatus> {
+    main_only(&window)?;
+    let context = app.state::<Context>();
+    let _operation = context
+        .operation
+        .try_lock()
+        .map_err(|_| "另一项编辑操作仍在进行")?;
+    context.ensure_not_exiting()?;
+    app.state::<Updates>().ensure_idle()?;
+    no_active_capture(&context)?;
+    let directory = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let mut old = lock(&context.settings)?;
+    let previous_autostart = app
+        .autolaunch()
+        .is_enabled()
+        .map_err(|e| format!("无法读取系统开机启动状态：{e}"))?;
+    desktop_settings::replace_shortcuts(
+        &old,
+        &settings.preferences,
+        |shortcut, register| {
+            if register && app.global_shortcut().is_registered(shortcut) {
+                Ok(false)
+            } else if register {
+                app.global_shortcut().register(shortcut).map(|_| true)
+            } else if app.global_shortcut().is_registered(shortcut) {
+                app.global_shortcut().unregister(shortcut).map(|_| true)
+            } else {
+                Ok(false)
+            }
+            .map_err(|e| e.to_string())
+        },
+        || {
+            desktop_settings::update_startup(
+                previous_autostart,
+                settings.autostart,
+                |enabled| {
+                    let launcher = app.autolaunch();
+                    if enabled {
+                        launcher.enable()
+                    } else {
+                        launcher.disable()
+                    }
+                    .map_err(|e| e.to_string())?;
+                    if launcher.is_enabled().map_err(|e| e.to_string())? != enabled {
+                        return Err("系统启动项状态未匹配请求，请检查系统设置".into());
+                    }
+                    Ok(())
+                },
+                || desktop_settings::save(&directory, &settings.preferences),
+            )
+        },
+    )?;
+    *old = settings.preferences.clone();
+    *lock(&context.shortcut_error)? = None;
+    Ok(settings)
+}
+#[tauri::command]
+fn set_editor_state(
+    app: AppHandle,
+    window: WebviewWindow,
+    has_session: bool,
+    dirty: bool,
+    busy: bool,
+) -> Result<()> {
+    main_only(&window)?;
+    let (pending, release_startup) = {
+        let context = app.state::<Context>();
+        let mut editor = lock(&context.editor)?;
+        editor.update(has_session, dirty, busy);
+        let announce = editor.exit_pending && !editor.exit_announced;
+        if announce {
+            editor.exit_announced = true;
+        }
+        let release = editor.release_startup_when_ready && editor.empty_idle();
+        if release {
+            editor.release_startup_when_ready = false;
+        }
+        (announce, release)
+    };
+    if pending {
+        app.emit_to("main", "request-exit", ())
+            .map_err(|e| e.to_string())?;
+    }
+    if release_startup {
+        offer_idle_release(&app);
+    }
+    Ok(())
+}
+fn begin_exit(app: &AppHandle) -> Result<()> {
+    let context = app.state::<Context>();
+    let _operation = context
+        .operation
+        .try_lock()
+        .map_err(|_| "正在处理图片，请完成后再退出")?;
+    app.state::<Updates>().ensure_idle()?;
+    no_active_capture(&context)?;
+    let (immediate, announce) = {
+        let mut editor = lock(&context.editor)?;
+        if editor.exit_approved {
+            return Ok(());
+        }
+        if editor.reported && editor.busy {
+            return Err("正在处理编辑，请完成后再退出".into());
+        }
+        // A cached clean flag can race a new frontend edit. Only a released empty
+        // WebView can exit without asking the current frontend to lock and flush.
+        let immediate = editor.released;
+        let announce = editor.reported && !editor.exit_announced;
+        editor.exit_pending = true;
+        editor.release_request = None;
+        editor.exit_approved = immediate;
+        if announce {
+            editor.exit_announced = true;
+        }
+        (immediate, announce)
+    };
+    if immediate {
+        app.exit(0);
+    } else {
+        show_main(app);
+        if announce {
+            let _ = app.emit_to("main", "request-exit", ());
+        }
+    }
+    Ok(())
+}
+#[tauri::command]
+fn request_exit(app: AppHandle, window: WebviewWindow) -> Result<()> {
+    main_only(&window)?;
+    begin_exit(&app)
+}
+#[tauri::command]
+fn cancel_exit(app: AppHandle, window: WebviewWindow) -> Result<()> {
+    main_only(&window)?;
+    let context = app.state::<Context>();
+    let mut editor = lock(&context.editor)?;
+    if editor.exit_approved {
+        return Err("退出已开始".into());
+    }
+    editor.exit_pending = false;
+    editor.exit_announced = false;
+    Ok(())
+}
+#[tauri::command]
+fn confirm_exit(app: AppHandle, window: WebviewWindow) -> Result<()> {
+    main_only(&window)?;
+    let context = app.state::<Context>();
+    let _operation = context
+        .operation
+        .try_lock()
+        .map_err(|_| "正在处理图片，请完成后再退出")?;
+    app.state::<Updates>().ensure_idle()?;
+    no_active_capture(&context)?;
+    lock(&context.editor)?.confirm_exit()?;
+    app.exit(0);
+    Ok(())
+}
+fn offer_idle_release(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let context = app.state::<Context>();
+    if app.state::<Updates>().ensure_idle().is_err() || no_active_capture(&context).is_err() {
+        return;
+    }
+    if context.current.lock().map_or(true, |image| image.is_some()) {
+        return;
+    }
+    let request_id = {
+        let Ok(mut editor) = context.editor.lock() else {
+            return;
+        };
+        if !editor.empty_idle() {
+            return;
+        }
+        let id = context.sequence.fetch_add(1, Ordering::SeqCst) + 1;
+        editor.release_request = Some(id);
+        id
+    };
+    let _ = window.emit(
+        "request-idle-release",
+        serde_json::json!({"requestId":request_id}),
+    );
+}
+#[tauri::command]
+fn cancel_idle_release(app: AppHandle, window: WebviewWindow, request_id: u64) -> Result<()> {
+    main_only(&window)?;
+    let context = app.state::<Context>();
+    let mut editor = lock(&context.editor)?;
+    if editor.release_request == Some(request_id) {
+        editor.release_request = None;
+    }
+    Ok(())
+}
+#[tauri::command]
+async fn release_empty_editor(
+    app: AppHandle,
+    window: WebviewWindow,
+    request_id: u64,
+) -> Result<()> {
+    main_only(&window)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let context = app.state::<Context>();
+        // Initial read-only metadata loading can overlap the ready handshake.
+        // Wait off the UI thread, then re-check every condition and request token.
+        let _operation = lock(&context.operation)?;
+        app.state::<Updates>().ensure_idle()?;
+        no_active_capture(&context)?;
+        if lock(&context.current)?.is_some() {
+            return Err("仍有原生图片待编辑，保留编辑器".into());
+        }
+        lock(&context.editor)?.release(request_id)?;
+        if let Err(error) = window.destroy() {
+            let mut editor = lock(&context.editor)?;
+            editor.released = false;
+            editor.reported = true;
+            return Err(error.to_string());
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|_| "释放空编辑器失败")?
+}
+#[tauri::command]
+async fn recognize_text(
+    app: AppHandle,
+    window: WebviewWindow,
+    data_url: String,
+) -> Result<crate::ocr::OcrResult> {
+    main_only(&window)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let context = app.state::<Context>();
+        let _operation = context
+            .operation
+            .try_lock()
+            .map_err(|_| "另一项图片操作仍在进行")?;
+        context.ensure_not_exiting()?;
+        app.state::<Updates>().ensure_idle()?;
+        no_active_capture(&context)?;
+        crate::ocr::recognize(&data_url)
+    })
+    .await
+    .map_err(|_| "本地文字识别异常终止，请重试或手动打码")?
+}
+#[tauri::command]
+async fn get_recovery_storage(app: AppHandle, window: WebviewWindow) -> Result<RecoveryStorage> {
+    main_only(&window)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let context = app.state::<Context>();
+        let _operation = lock(&context.operation)?;
+        app.state::<Updates>().ensure_idle()?;
+        recovery::storage(&app.path().app_data_dir().map_err(|e| e.to_string())?)
+    })
+    .await
+    .map_err(|_| "统计备份空间失败")?
+}
+#[tauri::command]
+async fn delete_recovery_point(app: AppHandle, window: WebviewWindow, id: String) -> Result<()> {
+    main_only(&window)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let context = app.state::<Context>();
+        let _operation = lock(&context.operation)?;
+        context.ensure_not_exiting()?;
+        app.state::<Updates>().ensure_idle()?;
+        no_active_capture(&context)?;
+        recovery::delete(&app.path().app_data_dir().map_err(|e| e.to_string())?, &id)
+    })
+    .await
+    .map_err(|_| "删除恢复点失败")?
+}
+#[tauri::command]
 fn get_update_status(app: AppHandle, window: WebviewWindow) -> Result<UpdateStatus> {
     main_only(&window)?;
     app.state::<Updates>().status()
@@ -608,6 +1030,7 @@ async fn check_starshot_update(app: AppHandle, window: WebviewWindow) -> Result<
             .operation
             .try_lock()
             .map_err(|_| "另一项编辑操作仍在进行")?;
+        context.ensure_not_exiting()?;
         no_active_capture(&context)?;
         app.state::<Updates>().begin_check(&app)?;
     }
@@ -655,6 +1078,7 @@ async fn download_starshot_update(
             .operation
             .try_lock()
             .map_err(|_| "另一项编辑操作仍在进行")?;
+        context.ensure_not_exiting()?;
         no_active_capture(&context)?;
         app.state::<Updates>()
             .begin_download(&app, &expected_version)?
@@ -705,6 +1129,7 @@ fn set_update_confirmation(
         .try_lock()
         .map_err(|_| "另一项编辑操作仍在进行")?;
     if pending {
+        context.ensure_not_exiting()?;
         no_active_capture(&context)?;
     }
     app.state::<Updates>()
@@ -732,6 +1157,7 @@ async fn install_starshot_update(
             .operation
             .try_lock()
             .map_err(|_| "另一项编辑操作仍在进行")?;
+        context.ensure_not_exiting()?;
         no_active_capture(&context)?;
         app.state::<Updates>()
             .begin_install(&app, &expected_version)?
@@ -819,14 +1245,20 @@ async fn read_recovery_point(
     id: String,
 ) -> Result<RecoveredSession> {
     main_only(&window)?;
-    app.state::<Updates>().ensure_idle()?;
     let directory = app
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    tauri::async_runtime::spawn_blocking(move || recovery::read(&directory, &id))
-        .await
-        .map_err(|_| "读取恢复点失败")?
+    tauri::async_runtime::spawn_blocking(move || {
+        let context = app.state::<Context>();
+        let _operation = lock(&context.operation)?;
+        context.ensure_not_exiting()?;
+        app.state::<Updates>().ensure_idle()?;
+        no_active_capture(&context)?;
+        recovery::read(&directory, &id)
+    })
+    .await
+    .map_err(|_| "读取恢复点失败")?
 }
 #[tauri::command]
 fn restart_app(app: AppHandle, window: WebviewWindow) -> Result<()> {
@@ -840,6 +1272,12 @@ pub fn run() {
         .manage(Context::default())
         .manage(Updates::new())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(
+            tauri_plugin_autostart::Builder::new()
+                .app_name("Starshot")
+                .arg("--start-in-tray")
+                .build(),
+        )
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             show_main(app)
         }))
@@ -850,29 +1288,38 @@ pub fn run() {
                     if event.state() != ShortcutState::Pressed {
                         return;
                     }
-                    if CAPTURE_SHORTCUT.parse::<Shortcut>().ok().as_ref() == Some(shortcut) {
-                        dispatch_capture(app);
-                    } else if PIN_SHORTCUT.parse::<Shortcut>().ok().as_ref() == Some(shortcut) {
-                        dispatch_pin(app);
+                    let bindings = app
+                        .state::<Context>()
+                        .settings
+                        .lock()
+                        .ok()
+                        .and_then(|settings| settings.shortcuts().ok());
+                    if let Some([capture, pin]) = bindings {
+                        if &capture == shortcut {
+                            dispatch_capture(app);
+                        } else if &pin == shortcut {
+                            dispatch_pin(app);
+                        }
                     }
                 })
                 .build(),
         )
         .setup(|app| {
             let mut errors = Vec::new();
-            for text in [CAPTURE_SHORTCUT, PIN_SHORTCUT] {
-                if let Err(error) = text
-                    .parse::<Shortcut>()
-                    .map_err(|e| e.to_string())
-                    .and_then(|shortcut| {
-                        app.global_shortcut()
-                            .register(shortcut)
-                            .map_err(|e| e.to_string())
-                    })
-                {
-                    errors.push(format!("快捷键 {text} 注册失败：{error}"));
+            let directory = app.path().app_data_dir()?;
+            let settings = desktop_settings::load(&directory).unwrap_or_else(|error| {
+                errors.push(error);
+                DesktopSettings::default()
+            });
+            for shortcut in settings.shortcuts()? {
+                if let Err(error) = app.global_shortcut().register(shortcut) {
+                    errors.push(format!("快捷键注册失败：{error}"));
                 }
             }
+            let hidden =
+                settings.start_in_tray || std::env::args().any(|arg| arg == "--start-in-tray");
+            *lock(&app.state::<Context>().settings)? = settings;
+            lock(&app.state::<Context>().editor)?.release_startup_when_ready = hidden;
             if !errors.is_empty() {
                 *lock(&app.state::<Context>().shortcut_error)? = Some(errors.join("；"));
             }
@@ -934,15 +1381,16 @@ pub fn run() {
                         }
                     }
                     "quit" => {
-                        if app.state::<Updates>().blocks_exit() {
-                            report_error(app, "请先完成安装确认或等待更新完成后退出");
-                        } else {
-                            app.exit(0);
+                        if let Err(error) = begin_exit(app) {
+                            report_error(app, &error);
                         }
                     }
                     _ => {}
                 });
             tray.build(app)?;
+            if !hidden {
+                show_main(app.handle());
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -950,6 +1398,7 @@ pub fn run() {
                 if window.label() == "main" {
                     api.prevent_close();
                     let _ = window.hide();
+                    offer_idle_release(window.app_handle());
                 } else if window.label().starts_with("capture-") {
                     api.prevent_close();
                     let app = window.app_handle().clone();
@@ -990,15 +1439,82 @@ pub fn run() {
             list_recovery_points,
             create_recovery_point,
             read_recovery_point,
-            restart_app
+            restart_app,
+            get_desktop_settings,
+            set_desktop_settings,
+            set_editor_state,
+            request_exit,
+            cancel_exit,
+            confirm_exit,
+            cancel_idle_release,
+            release_empty_editor,
+            recognize_text,
+            get_recovery_storage,
+            delete_recovery_point,
+            copy_text,
+            reveal_saved_image
         ])
         .build(tauri::generate_context!())
         .expect("星镜无法启动")
         .run(|app, event| {
-            if let tauri::RunEvent::ExitRequested { api, .. } = event {
-                if app.state::<Updates>().blocks_exit() {
-                    api.prevent_exit();
+            match event {
+                tauri::RunEvent::ExitRequested { api, code, .. } => {
+                    if code == Some(tauri::RESTART_EXIT_CODE) {
+                        return;
+                    }
+                    let approved = app
+                        .state::<Context>()
+                        .editor
+                        .lock()
+                        .is_ok_and(|editor| editor.exit_approved);
+                    if !approved {
+                        api.prevent_exit();
+                        // Last-window destruction must leave the tray process alive.
+                        if app.get_webview_window("main").is_none() && code.is_none() {
+                            return;
+                        }
+                        if let Err(error) = begin_exit(app) {
+                            report_error(app, &error);
+                        }
+                    }
                 }
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::Reopen { .. } => show_main(app),
+                _ => {}
             }
         });
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::EditorLifecycle;
+
+    #[test]
+    fn unknown_or_busy_editor_cannot_exit_or_release_and_stale_release_is_rejected() {
+        let mut state = EditorLifecycle::default();
+        assert!(!state.empty_idle());
+        assert!(state.confirm_exit().is_err());
+        state.update(false, false, false);
+        state.release_request = Some(7);
+        assert!(state.release(6).is_err());
+        state.update(true, true, false);
+        assert!(state.release(7).is_err());
+        state.exit_pending = true;
+        state.update(true, true, true);
+        assert!(state.confirm_exit().is_err());
+        state.update(true, true, false);
+        state.confirm_exit().unwrap();
+        assert!(state.exit_approved);
+    }
+
+    #[test]
+    fn only_confirmed_empty_idle_editor_releases() {
+        let mut state = EditorLifecycle::default();
+        state.update(false, false, false);
+        state.release_request = Some(9);
+        state.release(9).unwrap();
+        assert!(state.released);
+        assert!(!state.reported);
+        assert!(state.release(9).is_err());
+    }
 }

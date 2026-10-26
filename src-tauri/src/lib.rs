@@ -1,6 +1,9 @@
 #[cfg(feature = "desktop")]
 mod desktop;
+#[cfg(feature = "desktop")]
+mod desktop_settings;
 pub mod imaging;
+pub mod ocr;
 pub mod recovery;
 #[cfg(feature = "desktop")]
 mod updater;
@@ -44,6 +47,22 @@ mod capability_tests {
             ("create_recovery_point", [true, false, false]),
             ("read_recovery_point", [true, false, false]),
             ("restart_app", [true, false, false]),
+            ("get_desktop_settings", [true, false, false]),
+            ("set_desktop_settings", [true, false, false]),
+            ("set_editor_state", [true, false, false]),
+            ("request_exit", [true, false, false]),
+            ("cancel_exit", [true, false, false]),
+            ("confirm_exit", [true, false, false]),
+            ("release_empty_editor", [true, false, false]),
+            ("cancel_idle_release", [true, false, false]),
+            ("get_recovery_storage", [true, false, false]),
+            ("delete_recovery_point", [true, false, false]),
+            ("copy_text", [true, false, false]),
+            ("reveal_saved_image", [true, false, false]),
+            ("recognize_text", [true, false, false]),
+            ("plugin:autostart|enable", [false, false, false]),
+            ("plugin:autostart|disable", [false, false, false]),
+            ("plugin:autostart|is_enabled", [false, false, false]),
             ("plugin:updater|check", [false, false, false]),
             ("plugin:updater|download", [false, false, false]),
             ("plugin:updater|install", [false, false, false]),

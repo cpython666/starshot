@@ -6,6 +6,8 @@
 | --- | --- |
 | `src/App.vue` | 主编辑器、原图与标注、美化偏好、撤销/重做、最近会话、导入/导出。`?view=capture` / `?view=pin` 分别挂载独立界面 |
 | `src/editor.ts` | 预览和PNG/JPEG共用Canvas管线；标注原图坐标，裁剪只改变可见窗口；马赛克实际替换像素 |
+| `src/{privacy.ts,objects.ts,preferences.ts,share.ts}` | 本地敏感规则、对象/贴纸预算、非图片偏好与原创宣传图；OCR原文不存入候选状态 |
+| `src-tauri/src/{ocr.rs,ocr/,desktop_settings.rs}` | macOS Vision / Windows离线子进程识别；快捷键与开机启动事务保存 |
 | `src/geometry.ts` | 选区夹取、候选命中、受限矩形边缘启发式；并非系统控件树 |
 | `src/components/CaptureOverlay.vue` | 原生冻结图/明确demo分支，选择、8向调整、键盘微调、放大镜与颜色读数 |
 | `src/components/PinWindow.vue` | 原生贴图拖动、缩放队列、旋转翻转、透明度、工具条显隐 |
@@ -25,12 +27,22 @@
 - 保存先完整编码，再在目标同目录创建临时文件、fsync、原子替换；失败保留旧目标。JPEG以白底合成透明像素。取消原生对话框不提交编辑或丢失当前图。
 - macOS系统占用Cmd+Shift+3；贴原图使用 `CommandOrControl+Alt+3`，开始截图 `CommandOrControl+Shift+2`。实际冲突通过UI报错，不使启动失败。
 - 新图最近会话最多6张、原图合计48MP；最多60个撤销步骤。预算不包含背景/临时渲染/快照，不代表进程硬内存上限。贴图最多12张。
-- 用户反馈菜单栏原图标难辨认（2026-10-26）。托盘不再复用带底板的应用图标：`public/tray-template.svg`生成36px黑色透明模板，macOS启用icon_as_template；`public/tray-contrast.svg`生成32px紫色/白边图标供Windows。源码接入desktop.rs，已有image依赖负责解码，无新增依赖。生成命令为 `npm run tauri -- icon public/tray-template.svg --output src-tauri/icons/tray-template --png 36`，另一份替换为tray-contrast和32。当前修补版0.2.1；系统实机效果与设计预览分开记录。
+- 用户反馈菜单栏原图标难辨认（2026-10-26）。托盘不再复用带底板的应用图标：`public/tray-template.svg`生成36px黑色透明模板，macOS启用icon_as_template；`public/tray-contrast.svg`生成32px紫色/白边图标供Windows。源码接入desktop.rs，已有image依赖负责解码，无新增依赖。生成命令为 `npm run tauri -- icon public/tray-template.svg --output src-tauri/icons/tray-template --png 36`，另一份替换为tray-contrast和32。此修复自0.2.1引入；系统实机效果与设计预览分开记录。
 
 ## 回归方式
+
+0.3.0关键边界：
+
+- `main.ts`按窗口动态加载界面；空白主窗关闭使用前后端握手，先锁前端输入再释放WebView。任何图片、异步导入、OCR、更新或退出工作均阻止释放；macOS Reopen重建主窗。已有编辑关闭主窗仍保留会话。
+- 退出请求总是向存活编辑器取最新状态，备份失败不得退出，备份成功后先flush最新原生状态再确认。安装器重启使用专用路径，不被普通退出门控拦截。
+- OCR只在用户点击后运行，输入为当前裁剪与已绘制对象；异步结果校验图片ID和编辑revision。Windows worker嵌入固定模型，标准输入/输出传图与结果、90秒超时、2线程，结束后释放进程。模型来源/哈希/独立许可见 `src-tauri/models/ocrs/NOTICE.md`。源码构建先运行 `npm run models:prepare`，固定字节数与SHA校验后写入Git忽略的模型路径；CI执行同一步骤，安装版仍完全内置离线模型。
+- `redact`使用不透明黑色，覆盖所有对象后再绘制；2×渲染后按物理像素floor/ceil补绘防止插值暴露边缘。零面积草稿不进入渲染或会话。候选预览框和选中辅助线不进入导出。
+- PNG贴纸单个2MiB/2MP，全会话按对象实例合计8MiB/8MP；导入、移动恢复和undo/redo均先校验预算。预解码缓存按当前会话及撤销/重做可达对象回收；拖动首次实际位移才创建撤销点。
+- 快捷键注册、OS开机启动和设置文件采用事务与回滚；插件autostart直通权限不开放给WebView。启动到托盘与开机启动分别保存/读取实际状态。
+
 
 `npm test`、`npm run build`、Rust `--no-default-features` 检查固定数据；桌面改动另跑 `cargo check --locked`、`cargo test --locked --lib`、fmt和平台打包，具体命令见README。
 
 浏览器可验证Canvas真实像素、裁切/取消/撤销、图片背景/边框和下载；不能据此宣称原生截图、录屏权限、置顶透显、快捷键和多屏通过。所有测试素材为原创，导出的截图与临时验证脚本放Git忽略的 `artifacts/`，可复用回归脚本放 `tests/`。
 
-`tests/browser-update-regression.mjs` 在已授权的Ego space/page运行原创像素与模拟IPC，覆盖备份/恢复失败保护、确认锁、固定安装版本和陈旧进度；不能替代真实安装器验收。0.2.0已取得双平台CI构建记录，详见验证文档。
+`tests/browser-update-regression.mjs` 在已授权的Ego space/page运行原创像素与模拟IPC，覆盖备份/恢复失败保护、确认锁、固定安装版本和陈旧进度；脚本覆盖范围不等于已经执行通过，不能替代真实安装器验收。各版本构建和回归结果见 [验证记录](../../../../docs/verification.md)。

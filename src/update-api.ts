@@ -8,7 +8,8 @@ export type UpdateStatus = {
   available?: { version: string; date?: string | null; notes?: string | null } | null;
   downloadReady: boolean; confirmationPending: boolean; downloaded: number; total?: number | null; error?: string | null; backupId?: string | null;
 };
-export type RecoveryPoint = { id: string; createdAt: number; appVersion: string; schemaVersion: number; reason: string; totalBytes: number; path: string; compatible: boolean };
+export type RecoveryPoint = {
+  diskBytes?: number | null; applicationBytes?: number | null; storageError?: string; id: string; createdAt: number; appVersion: string; schemaVersion: number; reason: string; totalBytes: number; path: string; compatible: boolean };
 export function initialUpdateStatus(): UpdateStatus { return { revision: 0, currentVersion: appVersion, configured: false, phase: 'idle', downloadReady: false, confirmationPending: false, downloaded: 0 }; }
 async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!updateDesktopAvailable) throw Error('软件更新与恢复需要在星镜桌面版使用。');

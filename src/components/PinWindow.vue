@@ -101,6 +101,7 @@ onBeforeUnmount(() => { mounted = false; unlisten?.(); window.removeEventListene
       <button type="button" aria-label="水平翻转图片" title="水平翻转（F）" @click="flipped = !flipped">↔</button>
       <label class="pin-opacity" title="贴图不透明度"><span>◐</span><input aria-label="贴图不透明度" type="range" min="0.15" max="1" step="0.05" :value="opacity" @input="setOpacity(Number(($event.target as HTMLInputElement).value))" /></label>
       <i />
+      <button v-if="desktop" type="button" aria-label="开启鼠标穿透" title="开启鼠标穿透；从托盘「恢复所有贴图鼠标操作」关闭穿透" @click="action('ignore-cursor',1)">⇥</button>
       <button type="button" aria-label="隐藏贴图工具栏" title="隐藏工具栏（空格）；双击图片可恢复" @click="toolbarVisible = false">⌄</button>
       <button type="button" class="pin-close" aria-label="关闭贴图" title="关闭贴图（Esc）" @click="close">×</button>
     </div>

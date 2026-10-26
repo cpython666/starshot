@@ -1,7 +1,7 @@
 import { clampRect, normalizeRect } from './geometry.ts';
 import type { Point, Rect, Size } from './geometry.ts';
 
-export type AnnotationType = 'rect' | 'ellipse' | 'arrow' | 'pen' | 'highlighter' | 'text' | 'number' | 'mosaic';
+export type AnnotationType = 'rect' | 'ellipse' | 'arrow' | 'pen' | 'highlighter' | 'text' | 'number' | 'mosaic' | 'sticker' | 'redact';
 export interface Annotation extends Rect {
   id: string;
   type: AnnotationType;
@@ -11,6 +11,8 @@ export interface Annotation extends Rect {
   text?: string;
   fontSize?: number;
   number?: number;
+  dataUrl?: string;
+  rotation?: number;
 }
 export interface EditorStyle {
   background: 'gradient' | 'solid' | 'transparent' | 'image';
@@ -32,7 +34,7 @@ export const DEFAULT_STYLE: EditorStyle = {
 export const MAX_IMAGE_PIXELS = 40_000_000;
 export const MAX_RENDER_PIXELS = 64_000_000;
 export const MAX_DIMENSION = 16_384;
-export interface RenderOptions { crop?: Rect; scale?: 1 | 2; backgroundImage?: CanvasImageSource; format?: 'png' | 'jpeg' }
+export interface RenderOptions { crop?: Rect; scale?: 1 | 2; backgroundImage?: CanvasImageSource; stickers?: ReadonlyMap<string, CanvasImageSource>; format?: 'png' | 'jpeg' }
 export interface RenderLayout extends Size { imageRect: Rect; crop: Rect; scale: number }
 
 const bounded = (value: number, min: number, max: number, fallback: number) => Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : fallback;
@@ -98,7 +100,7 @@ function roundedPath(ctx: CanvasRenderingContext2D, rect: Rect, radius: number):
   ctx.lineTo(x, y + r); ctx.quadraticCurveTo(x, y, x + r, y); ctx.closePath();
 }
 
-function drawAnnotation(ctx: CanvasRenderingContext2D, annotation: Annotation): void {
+function drawAnnotation(ctx: CanvasRenderingContext2D, annotation: Annotation, stickers?: ReadonlyMap<string, CanvasImageSource>): void {
   if (![annotation.x, annotation.y, annotation.width, annotation.height].every(Number.isFinite)) throw new Error('标注包含无效坐标');
   ctx.save();
   ctx.strokeStyle = ctx.fillStyle = color(annotation.color, '#ff6b81');
@@ -108,6 +110,25 @@ function drawAnnotation(ctx: CanvasRenderingContext2D, annotation: Annotation): 
   const rect = normalizeRect({ x, y }, { x: x + width, y: y + height });
   ctx.beginPath();
   switch (annotation.type) {
+    case 'sticker': {
+      const image = stickers?.get(annotation.dataUrl ?? '');
+      if (!image) throw Error('贴纸尚未解码，请重新导入或恢复会话');
+      if (width <= 0 || height <= 0) throw Error('贴纸尺寸必须大于零');
+      const rotation = annotation.rotation ?? 0;
+      if (!Number.isFinite(rotation) || rotation < 0 || rotation > 360) throw Error('贴纸旋转角度无效');
+      ctx.translate(x + width / 2, y + height / 2);
+      ctx.rotate(rotation * Math.PI / 180);
+      ctx.drawImage(image, -width / 2, -height / 2, width, height);
+      break;
+    }
+    case 'redact': {
+      if (width <= 0 || height <= 0) throw Error('遮挡区域尺寸必须大于零');
+      // Expand fractional edges to whole source pixels, with no source transparency.
+      ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.fillStyle = '#000000';
+      const left = Math.floor(x), top = Math.floor(y);
+      ctx.fillRect(left, top, Math.ceil(x + width) - left, Math.ceil(y + height) - top);
+      break;
+    }
     case 'rect': ctx.strokeRect(rect.x, rect.y, rect.width, rect.height); break;
     case 'ellipse':
       ctx.ellipse(rect.x + rect.width / 2, rect.y + rect.height / 2, rect.width / 2, rect.height / 2, 0, 0, Math.PI * 2); ctx.stroke(); break;
@@ -189,7 +210,15 @@ export function renderImage(source: CanvasImageSource, size: Size, annotations: 
   const pictureCtx = context(picture);
   pictureCtx.drawImage(source, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height);
   for (const annotation of annotations) {
+    if (annotation.type === 'redact') continue;
     if (annotation.type === 'mosaic') { pixelate(picture, annotation, crop); continue; }
+    pictureCtx.save(); pictureCtx.translate(-crop.x, -crop.y);
+    drawAnnotation(pictureCtx, annotation, options.stickers);
+    pictureCtx.restore();
+  }
+  // Keep solid privacy masks above later stickers, highlights and mosaics.
+  for (const annotation of annotations) {
+    if (annotation.type !== 'redact') continue;
     pictureCtx.save(); pictureCtx.translate(-crop.x, -crop.y);
     drawAnnotation(pictureCtx, annotation);
     pictureCtx.restore();
@@ -227,7 +256,20 @@ export function renderImage(source: CanvasImageSource, size: Size, annotations: 
     ctx.drawImage(shadow, 0, 0, width, height);
   }
   ctx.save(); roundedPath(ctx, imageRect, style.radius); ctx.clip();
-  ctx.drawImage(picture, imageRect.x, imageRect.y); ctx.restore();
+  ctx.drawImage(picture, imageRect.x, imageRect.y);
+  // Resampling at 2× can blend a masked edge with adjacent colored pixels.
+  // Repaint in output pixel space, while retaining the image's rounded clip.
+  ctx.scale(1 / layout.scale, 1 / layout.scale);
+  for (const annotation of annotations) {
+    if (annotation.type !== 'redact') continue;
+    const left = Math.floor((imageRect.x + Math.floor(annotation.x) - crop.x) * layout.scale);
+    const top = Math.floor((imageRect.y + Math.floor(annotation.y) - crop.y) * layout.scale);
+    const right = Math.ceil((imageRect.x + Math.ceil(annotation.x + annotation.width) - crop.x) * layout.scale);
+    const bottom = Math.ceil((imageRect.y + Math.ceil(annotation.y + annotation.height) - crop.y) * layout.scale);
+    ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.fillStyle = '#000000';
+    ctx.fillRect(left, top, right - left, bottom - top);
+  }
+  ctx.restore();
   if (style.borderWidth > 0) {
     const inset = style.borderWidth / 2;
     const borderRect = { x: imageRect.x + inset, y: imageRect.y + inset, width: Math.max(0, imageRect.width - style.borderWidth), height: Math.max(0, imageRect.height - style.borderWidth) };

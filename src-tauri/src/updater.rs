@@ -195,6 +195,7 @@ impl Updates {
             Err("请在更新完成后再重启星镜。".into())
         }
     }
+    #[cfg(test)]
     pub fn blocks_exit(&self) -> bool {
         self.0
             .lock()

@@ -20,7 +20,20 @@
           "list_recovery_points",
           "create_recovery_point",
           "read_recovery_point",
-          "restart_app"
+          "restart_app",
+          "get_desktop_settings",
+          "set_desktop_settings",
+          "set_editor_state",
+          "request_exit",
+          "cancel_exit",
+          "confirm_exit",
+          "cancel_idle_release",
+          "release_empty_editor",
+          "get_recovery_storage",
+          "delete_recovery_point",
+          "copy_text",
+          "reveal_saved_image",
+          "recognize_text"
         ]
       }
     },

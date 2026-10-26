@@ -42,6 +42,7 @@ jobs:
           echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           node --input-type=module -e 'import { readFileSync } from "node:fs"; import { releaseNotes } from "./scripts/release-manifest.mjs"; releaseNotes(readFileSync("CHANGELOG.md", "utf8"), process.env.RELEASE_TAG.slice(1));'
       - run: npm ci --no-audit --no-fund
+      - run: npm run models:prepare
       - name: Install the signature verifier for real signing tests
         run: sudo apt-get update && sudo apt-get install --yes minisign
       - run: npm test
@@ -83,6 +84,7 @@ jobs:
         with:
           workspaces: src-tauri -> target
       - run: npm ci --no-audit --no-fund
+      - run: npm run models:prepare
       - run: npm run version:check -- '${{ needs.validate.outputs.tag }}'
       - run: npm test
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
@@ -108,6 +110,23 @@ jobs:
             if [ -z "${!name:-}" ]; then unset "$name"; fi
           done
           npm run tauri build -- --target '${{ matrix.target }}' --bundles '${{ matrix.bundles }}' --config '{"bundle":{"createUpdaterArtifacts":true}}'
+      - name: Verify the offline OCR worker with original pixels
+        if: runner.os == 'Windows'
+        run: python tests/ocr-worker-smoke.py src-tauri/target/${{ matrix.target }}/release/starshot.exe
+      - name: Verify isolated Windows installation and uninstallation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem 'src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe')
+          if ($installers.Count -ne 1) { throw 'Expected exactly one final NSIS installer.' }
+          ./tests/windows-installer-smoke.ps1 -InstallerPath $installers[0].FullName
+      - name: Preserve Windows installation evidence
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-smoke-release
+          path: artifacts/windows-installer-smoke/
+          if-no-files-found: warn
       - name: Verify macOS application signature
         if: runner.os == 'macOS'
         run: codesign --verify --deep --strict 'src-tauri/target/${{ matrix.target }}/release/bundle/macos/Starshot.app'

@@ -13,7 +13,7 @@ use std::{
 };
 
 type Result<T> = std::result::Result<T, String>;
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 pub const MAX_SESSION_BYTES: usize = 256 * 1024 * 1024;
 const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -28,6 +28,16 @@ pub struct RecoveryPoint {
     pub total_bytes: u64,
     pub path: String,
     pub compatible: bool,
+    pub disk_bytes: Option<u64>,
+    pub application_bytes: Option<u64>,
+    pub storage_error: Option<String>,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryStorage {
+    pub recovery_bytes: u64,
+    pub application_bytes: u64,
+    pub total_bytes: u64,
 }
 #[derive(Serialize)]
 pub struct RecoveredSession {
@@ -112,7 +122,11 @@ pub fn validate_session(session: &str) -> Result<()> {
         return Err("编辑会话超过 256 MiB，无法创建恢复点".into());
     }
     let value: Value = serde_json::from_str(session).map_err(|_| "编辑会话不是有效的 JSON")?;
-    if value.get("schemaVersion").and_then(Value::as_u64) != Some(u64::from(SCHEMA_VERSION)) {
+    let schema = value
+        .get("schemaVersion")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if ![1, u64::from(SCHEMA_VERSION)].contains(&schema) {
         return Err("此编辑会话版本不受支持，请使用兼容版本的星镜".into());
     }
     if !["starry", "moon", "plain", "moss", "sakura"].contains(&string(&value, "theme", 20)?) {
@@ -126,6 +140,8 @@ pub fn validate_session(session: &str) -> Result<()> {
         .ok_or("恢复会话最多支持 6 张图片")?;
     let mut ids = HashSet::new();
     let mut pixels = 0_u64;
+    let mut sticker_pixels = 0_u64;
+    let mut sticker_bytes = 0_usize;
     for document in documents {
         let id = string(document, "id", 128)?;
         if id.is_empty() || !ids.insert(id) {
@@ -211,6 +227,8 @@ pub fn validate_session(session: &str) -> Result<()> {
                 "text",
                 "number",
                 "mosaic",
+                "sticker",
+                "redact",
             ]
             .contains(&string(annotation, "type", 20)?)
             {
@@ -221,6 +239,42 @@ pub fn validate_session(session: &str) -> Result<()> {
                 number(annotation, key, -16384.0, 16384.0)?;
             }
             number(annotation, "lineWidth", 1.0, 100.0)?;
+            let kind = string(annotation, "type", 20)?;
+            if schema == 1 && matches!(kind, "sticker" | "redact") {
+                return Err("旧版会话不能包含贴纸或敏感信息遮盖，请使用新版会话格式".into());
+            }
+            if matches!(kind, "sticker" | "redact")
+                && (number(annotation, "width", 0.0, 16384.0)? == 0.0
+                    || number(annotation, "height", 0.0, 16384.0)? == 0.0)
+            {
+                return Err("贴纸和遮盖的尺寸必须大于零".into());
+            }
+            if kind == "sticker" {
+                if annotation.get("rotation").is_some() {
+                    number(annotation, "rotation", 0.0, 360.0)?;
+                }
+                let data = string(
+                    annotation,
+                    "dataUrl",
+                    (2 * 1024 * 1024_usize).div_ceil(3) * 4 + 22,
+                )?;
+                let encoded = data
+                    .strip_prefix("data:image/png;base64,")
+                    .ok_or("贴纸必须为内嵌 PNG 图片")?;
+                let bytes = STANDARD.decode(encoded).map_err(|_| "贴纸 PNG 数据无效")?;
+                if bytes.len() > 2 * 1024 * 1024 {
+                    return Err("单张贴纸超过 2 MiB".into());
+                }
+                let (w, h) = dimensions(data, 2_000_000)?;
+                // Decode the bounded PNG too: an intact header alone is not a usable sticker.
+                image::load_from_memory_with_format(&bytes, ImageFormat::Png)
+                    .map_err(|_| "贴纸 PNG 内容损坏")?;
+                sticker_pixels += u64::from(w) * u64::from(h);
+                sticker_bytes += bytes.len();
+                if sticker_pixels > 8_000_000 || sticker_bytes > 8 * 1024 * 1024 {
+                    return Err("会话贴纸合计超过 800 万像素或 8 MiB".into());
+                }
+            }
             if annotation.get("text").is_some() {
                 string(annotation, "text", 10000)?;
             }
@@ -253,7 +307,7 @@ pub fn validate_session(session: &str) -> Result<()> {
     }
     Ok(())
 }
-fn valid_id(id: &str) -> bool {
+pub(crate) fn valid_id(id: &str) -> bool {
     let parts: Vec<_> = id.split('-').collect();
     parts.len() == 3
         && parts[0] == "point"
@@ -338,8 +392,11 @@ fn manifest_at(root: &Path, id: &str) -> Result<Manifest> {
     }
     Ok(manifest)
 }
-fn point(manifest: &Manifest, root: &Path) -> RecoveryPoint {
-    RecoveryPoint {
+fn point(manifest: &Manifest, root: &Path) -> Result<RecoveryPoint> {
+    let disk = tree_bytes(&root.join(&manifest.id));
+    let application = application_bytes(root.parent().ok_or("恢复点根目录无效")?, &manifest.id);
+    let storage_error = disk.as_ref().err().or(application.as_ref().err()).cloned();
+    Ok(RecoveryPoint {
         id: manifest.id.clone(),
         created_at: manifest.created_at,
         app_version: manifest.app_version.clone(),
@@ -347,11 +404,107 @@ fn point(manifest: &Manifest, root: &Path) -> RecoveryPoint {
         reason: manifest.reason.clone(),
         total_bytes: manifest.total_bytes,
         path: root.join(&manifest.id).to_string_lossy().into_owned(),
-        compatible: manifest.schema_version == SCHEMA_VERSION,
+        compatible: [1, SCHEMA_VERSION].contains(&manifest.schema_version),
+        disk_bytes: disk.ok(),
+        application_bytes: application.ok(),
+        storage_error,
+    })
+}
+// Never follow symbolic links (including links nested inside an application bundle).
+fn tree_bytes(path: &Path) -> Result<u64> {
+    let metadata = fs::symlink_metadata(path).map_err(|e| format!("备份文件无法访问：{e}"))?;
+    if metadata.file_type().is_symlink() {
+        return Err("备份目录含符号链接，已停止操作".into());
     }
+    if metadata.is_file() {
+        return Ok(metadata.len());
+    }
+    if !metadata.is_dir() {
+        return Err("备份包含不支持的文件类型".into());
+    }
+    let mut total = 0_u64;
+    for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
+        total = total
+            .checked_add(tree_bytes(&entry.map_err(|e| e.to_string())?.path())?)
+            .ok_or("备份大小超出范围")?;
+    }
+    Ok(total)
+}
+fn existing_directory(path: &Path) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.to_string()),
+        Ok(_) => {
+            regular(path, true)?;
+            Ok(true)
+        }
+    }
+}
+pub fn application_bytes(default: &Path, id: &str) -> Result<u64> {
+    if !valid_id(id) {
+        return Err("恢复点标识无效".into());
+    }
+    let root = default.join("application-backups");
+    if !existing_directory(&root)? {
+        return Ok(0);
+    }
+    let path = root.join(id);
+    if !existing_directory(&path)? {
+        return Ok(0);
+    }
+    tree_bytes(&path)
+}
+pub fn storage(default: &Path) -> Result<RecoveryStorage> {
+    let mut totals = [0_u64; 2];
+    for (index, name) in ["recovery", "application-backups"].into_iter().enumerate() {
+        let root = default.join(name);
+        if !existing_directory(&root)? {
+            continue;
+        }
+        for entry in fs::read_dir(root).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            if !entry.file_name().to_str().is_some_and(valid_id) {
+                continue;
+            }
+            totals[index] = totals[index]
+                .checked_add(tree_bytes(&entry.path())?)
+                .ok_or("备份大小超出范围")?;
+        }
+    }
+    Ok(RecoveryStorage {
+        recovery_bytes: totals[0],
+        application_bytes: totals[1],
+        total_bytes: totals[0].checked_add(totals[1]).ok_or("备份大小超出范围")?,
+    })
+}
+pub fn delete(default: &Path, id: &str) -> Result<()> {
+    if !valid_id(id) {
+        return Err("恢复点标识无效".into());
+    }
+    let root = default.join("recovery");
+    regular(&root, true)?;
+    // Preflight both trees before touching either. A forged ID or nested link deletes nothing.
+    manifest_at(&root, id)?;
+    let point = root.join(id);
+    tree_bytes(&point)?;
+    let apps = default.join("application-backups");
+    let application = apps.join(id);
+    let has_application = existing_directory(&apps)? && existing_directory(&application)?;
+    if has_application {
+        tree_bytes(&application)?;
+    }
+    if has_application {
+        fs::remove_dir_all(&application)
+            .map_err(|e| format!("旧应用备份删除失败，恢复点已保留：{e}"))?;
+    }
+    fs::remove_dir_all(point).map_err(|e| format!("恢复点删除失败，请刷新列表查看实际结果：{e}"))
 }
 pub fn create(default: &Path, session: &str, reason: &str) -> Result<RecoveryPoint> {
     validate_session(session)?;
+    let mut normalized: Value =
+        serde_json::from_str(session).map_err(|_| "编辑会话不是有效的 JSON")?;
+    normalized["schemaVersion"] = Value::from(SCHEMA_VERSION);
+    let session = serde_json::to_string(&normalized).map_err(|e| e.to_string())?;
     if !["manual", "before-update"].contains(&reason) {
         return Err("恢复点原因无效".into());
     }
@@ -403,7 +556,7 @@ pub fn create(default: &Path, session: &str, reason: &str) -> Result<RecoveryPoi
     File::open(&root)
         .and_then(|f| f.sync_all())
         .map_err(|e| format!("恢复点目录同步失败：{e}"))?;
-    Ok(point(&manifest, &root))
+    point(&manifest, &root)
 }
 pub fn list(default: &Path) -> Result<Vec<RecoveryPoint>> {
     let root = default.join("recovery");
@@ -419,7 +572,7 @@ pub fn list(default: &Path) -> Result<Vec<RecoveryPoint>> {
             continue;
         };
         if let Ok(manifest) = manifest_at(&root, id) {
-            points.push(point(&manifest, &root));
+            points.push(point(&manifest, &root)?);
         }
     }
     points.sort_by(|a, b| {
@@ -433,7 +586,7 @@ pub fn read(default: &Path, id: &str) -> Result<RecoveredSession> {
     let root = default.join("recovery");
     regular(&root, true)?;
     let manifest = manifest_at(&root, id)?;
-    if manifest.schema_version != SCHEMA_VERSION {
+    if ![1, SCHEMA_VERSION].contains(&manifest.schema_version) {
         return Err("此恢复点由不兼容版本创建，不能在当前版本恢复".into());
     }
     let bytes = bounded_read(&root.join(id).join("session.json"), MAX_SESSION_BYTES)?;
@@ -446,7 +599,7 @@ pub fn read(default: &Path, id: &str) -> Result<RecoveredSession> {
     validate_session(&session)?;
     Ok(RecoveredSession {
         session,
-        point: point(&manifest, &root),
+        point: point(&manifest, &root)?,
     })
 }
 
@@ -456,7 +609,7 @@ mod tests {
     use serde_json::json;
     fn fixture() -> Value {
         let image = image::DynamicImage::new_rgba8(2, 3);
-        json!({"schemaVersion":1,"theme":"starry","currentId":"fixture","documents":[{
+        json!({"schemaVersion":2,"theme":"starry","currentId":"fixture","documents":[{
             "id":"fixture","name":"原创固定像素","dataUrl":crate::imaging::png_data_url(&image).unwrap(),"width":2,"height":3,
             "state":{"annotations":[],"style":{"background":"solid","backgroundColor":"#123456","gradientFrom":"#123456","gradientTo":"#abcdef","gradientAngle":135,"padding":72,"radius":16,"borderWidth":1,"borderColor":"#ffffff","shadow":32,"aspect":"auto"}}
         }]})
@@ -482,7 +635,7 @@ mod tests {
         let session = fixture();
         validate_session(&session.to_string()).unwrap();
         for (pointer, replacement) in [
-            ("/schemaVersion", json!(2)),
+            ("/schemaVersion", json!(3)),
             ("/theme", json!("unknown")),
             ("/currentId", json!("missing")),
             ("/documents/0/width", json!(50000)),
@@ -514,7 +667,7 @@ mod tests {
         let point = create(directory.path(), &session.to_string(), "manual").unwrap();
         let file = Path::new(&point.path).join("manifest.json");
         let mut manifest: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
-        manifest["schemaVersion"] = json!(2);
+        manifest["schemaVersion"] = json!(3);
         fs::write(file, manifest.to_string()).unwrap();
         assert!(!list(directory.path()).unwrap()[0].compatible);
         assert!(read(directory.path(), &point.id).is_err());
@@ -540,6 +693,88 @@ mod tests {
         session["documents"][0]["dataUrl"] = json!(data);
         assert!(validate_session(&session.to_string()).is_err());
     }
+    #[test]
+    fn sticker_and_redaction_validate_real_png_and_shared_budget() {
+        let mut session = fixture();
+        let data =
+            crate::imaging::png_data_url(&image::DynamicImage::new_rgba8(1000, 2000)).unwrap();
+        let sticker = json!({"id":"s", "type":"sticker", "x":0,"y":0,"width":2,"height":3,"color":"#ffffff","lineWidth":1,"rotation":90,"dataUrl":data});
+        session["documents"][0]["state"]["annotations"] = json!([sticker]);
+        validate_session(&session.to_string()).unwrap();
+        let mut legacy = session.clone();
+        legacy["schemaVersion"] = json!(1);
+        assert!(validate_session(&legacy.to_string()).is_err());
+        let mut invalid = session.clone();
+        invalid["documents"][0]["state"]["annotations"][0]["rotation"] = json!(361);
+        assert!(validate_session(&invalid.to_string()).is_err());
+        let annotations = session["documents"][0]["state"]["annotations"]
+            .as_array_mut()
+            .unwrap();
+        let first = annotations[0].clone();
+        for index in 1..5 {
+            let mut next = first.clone();
+            next["id"] = json!(format!("s{index}"));
+            annotations.push(next);
+        }
+        assert!(validate_session(&session.to_string()).is_err());
+        session["documents"][0]["state"]["annotations"] = json!([{"id":"r", "type":"redact", "x":0,"y":0,"width":2,"height":3,"color":"#000000","lineWidth":1}]);
+        validate_session(&session.to_string()).unwrap();
+        session["documents"][0]["state"]["annotations"][0]["width"] = json!(0);
+        assert!(validate_session(&session.to_string()).is_err());
+    }
+    #[test]
+    fn old_sessions_read_without_mutation_and_new_snapshots_use_schema_two() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut legacy = fixture();
+        legacy["schemaVersion"] = json!(1);
+        let original = legacy.to_string();
+        let point = create(directory.path(), &original, "manual").unwrap();
+        assert_eq!(point.schema_version, 2);
+        assert_eq!(
+            serde_json::from_str::<Value>(&read(directory.path(), &point.id).unwrap().session)
+                .unwrap()["schemaVersion"],
+            2
+        );
+        let folder = Path::new(&point.path);
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(folder.join("manifest.json")).unwrap()).unwrap();
+        manifest["schemaVersion"] = json!(1);
+        manifest["totalBytes"] = json!(original.len());
+        manifest["sha256"] = json!(format!("{:x}", Sha256::digest(original.as_bytes())));
+        fs::write(folder.join("manifest.json"), manifest.to_string()).unwrap();
+        fs::write(folder.join("session.json"), &original).unwrap();
+        assert!(list(directory.path()).unwrap()[0].compatible);
+        assert_eq!(read(directory.path(), &point.id).unwrap().session, original);
+        assert_eq!(
+            fs::read_to_string(folder.join("session.json")).unwrap(),
+            original
+        );
+    }
+    #[test]
+    fn storage_and_delete_are_scoped_to_one_internal_id() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = create(directory.path(), &fixture().to_string(), "manual").unwrap();
+        let second = create(directory.path(), &fixture().to_string(), "manual").unwrap();
+        let app = directory.path().join("application-backups").join(&first.id);
+        fs::create_dir_all(&app).unwrap();
+        fs::write(app.join("original-app"), [1, 2, 3]).unwrap();
+        assert_eq!(application_bytes(directory.path(), &first.id).unwrap(), 3);
+        let before = storage(directory.path()).unwrap();
+        assert_eq!(before.application_bytes, 3);
+        assert_eq!(
+            before.total_bytes,
+            first.disk_bytes.unwrap() + second.disk_bytes.unwrap() + 3
+        );
+        assert!(delete(directory.path(), "../recovery").is_err());
+        delete(directory.path(), &first.id).unwrap();
+        assert!(!app.exists());
+        assert!(!Path::new(&first.path).exists());
+        assert!(read(directory.path(), &second.id).is_ok());
+        assert_eq!(
+            storage(directory.path()).unwrap().total_bytes,
+            second.disk_bytes.unwrap()
+        );
+    }
     #[cfg(unix)]
     #[test]
     fn refuses_symlinked_snapshot_files() {
@@ -550,5 +785,27 @@ mod tests {
         fs::rename(&file, &outside).unwrap();
         std::os::unix::fs::symlink(outside, file).unwrap();
         assert!(read(directory.path(), &point.id).is_err());
+        assert!(delete(directory.path(), &point.id).is_err());
+        assert!(Path::new(&point.path).exists());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn delete_rejects_nested_application_links_before_removing_session() {
+        let directory = tempfile::tempdir().unwrap();
+        let point = create(directory.path(), &fixture().to_string(), "manual").unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("untouched"), "original").unwrap();
+        let app = directory.path().join("application-backups").join(&point.id);
+        fs::create_dir_all(&app).unwrap();
+        std::os::unix::fs::symlink(outside.path(), app.join("link")).unwrap();
+        assert!(delete(directory.path(), &point.id).is_err());
+        assert!(Path::new(&point.path).join("session.json").exists());
+        let readable = read(directory.path(), &point.id).unwrap();
+        assert!(readable.point.application_bytes.is_none());
+        assert!(readable.point.storage_error.is_some());
+        assert_eq!(
+            fs::read_to_string(outside.path().join("untouched")).unwrap(),
+            "original"
+        );
     }
 }
