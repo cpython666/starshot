@@ -1,0 +1,1 @@
+{"identifier":"pin","description":"Local topmost image pins","windows":["pin-*"],"permissions":["core:event:allow-listen","core:event:allow-unlisten","pin-commands"]}

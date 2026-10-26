@@ -1,0 +1,26 @@
+{
+  "name": "starshot",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1430 --strictPort",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 1430 --strictPort",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "tauri": "tauri",
+    "version:check": "node scripts/version.mjs check",
+    "version:bump": "node scripts/version.mjs bump"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.8.0",
+    "vue": "^3.5.22"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.8.4",
+    "@vitejs/plugin-vue": "^6.0.1",
+    "typescript": "~5.9.3",
+    "vite": "^7.1.12",
+    "vue-tsc": "^3.1.1"
+  }
+}

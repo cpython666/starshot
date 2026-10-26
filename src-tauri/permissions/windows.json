@@ -1,0 +1,47 @@
+{
+  "permission": [
+    {
+      "identifier": "editor-commands",
+      "description": "Editor-only explicit capture, save, copy and pin actions",
+      "commands": {
+        "allow": [
+          "start_capture",
+          "get_current_image",
+          "save_image",
+          "copy_image",
+          "pin_image",
+          "get_app_status",
+          "cancel_capture",
+          "get_update_status",
+          "check_starshot_update",
+          "install_starshot_update",
+          "list_recovery_points",
+          "create_recovery_point",
+          "read_recovery_point",
+          "restart_app"
+        ]
+      }
+    },
+    {
+      "identifier": "capture-commands",
+      "description": "A capture overlay can read only its own frozen frame and complete or cancel that capture",
+      "commands": {
+        "allow": [
+          "get_capture_frame",
+          "finish_capture",
+          "cancel_capture"
+        ]
+      }
+    },
+    {
+      "identifier": "pin-commands",
+      "description": "A pin can read and control only itself",
+      "commands": {
+        "allow": [
+          "get_pin_image",
+          "pin_action"
+        ]
+      }
+    }
+  ]
+}

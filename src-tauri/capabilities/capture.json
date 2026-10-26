@@ -1,0 +1,1 @@
+{"identifier":"capture","description":"Frozen screenshot overlays","windows":["capture-*"],"permissions":["capture-commands"]}

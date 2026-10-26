@@ -1,0 +1,51 @@
+[package]
+name = "starshot"
+version = "0.2.0"
+description = "星镜 Starshot — 本地截图、贴图与图片美化"
+edition = "2021"
+rust-version = "1.90"
+license = "MIT"
+
+[lib]
+name = "starshot_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "starshot"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[features]
+default = ["desktop"]
+desktop = ["dep:tauri", "dep:tauri-build", "dep:xcap", "dep:arboard", "dep:tauri-plugin-dialog", "dep:tauri-plugin-global-shortcut", "dep:tauri-plugin-single-instance", "dep:tauri-plugin-updater"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+tauri = { version = "2", features = ["tray-icon", "macos-private-api"], optional = true }
+xcap = { version = "0.9.8", optional = true }
+arboard = { version = "3.6", default-features = false, features = ["image-data"], optional = true }
+tauri-plugin-dialog = { version = "2", optional = true }
+tauri-plugin-global-shortcut = { version = "2", optional = true }
+tauri-plugin-single-instance = { version = "2", optional = true }
+tauri-plugin-updater = { version = "2.10", optional = true }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [], optional = true }
+
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.test]
+debug = 0
+incremental = false
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
