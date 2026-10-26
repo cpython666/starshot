@@ -619,8 +619,11 @@ async fn check_starshot_update(app: AppHandle, window: WebviewWindow) -> Result<
             .timeout(Duration::from_secs(30))
             .on_before_exit(move || {
                 // Windows invokes this immediately before launching its installer. A later
-                // launch failure must leave the editor frozen, since cleanup has run.
+                // launch failure must restart the preserved app without reusing this session.
                 cleanup_started.store(true, Ordering::SeqCst);
+                // The installer exits directly, bypassing RunEvent::Exit. Release the
+                // instance lock before cleanup so a failed installer can reopen safely.
+                tauri_plugin_single_instance::destroy(&before_exit);
                 before_exit.cleanup_before_exit();
             })
             .build()
@@ -663,6 +666,8 @@ async fn install_starshot_update(
         app.state::<Updates>()
             .begin_install(&app, &expected_version)?
     };
+    // Cache process-only restart data before cleanup invalidates Tauri resources.
+    let restart_env = app.env();
     let result: Result<()> = async {
         let mut downloaded = 0_u64;
         let mut last_progress = Instant::now();
@@ -686,6 +691,8 @@ async fn install_starshot_update(
             .progress(&app, downloaded, Some(downloaded));
         app.state::<Updates>().phase(&app, "backing-up")?;
         let worker_app = app.clone();
+        let worker_cleanup_started = cleanup_started.clone();
+        let worker_restart_env = restart_env.clone();
         tauri::async_runtime::spawn_blocking(move || -> Result<()> {
             let directory = worker_app
                 .path()
@@ -699,8 +706,13 @@ async fn install_starshot_update(
             worker_app
                 .state::<Updates>()
                 .phase(&worker_app, "installing")?;
-            update
-                .install(bytes)
+            let install_result = update.install(bytes);
+            // Windows success exits inside the updater. A returned failure after its
+            // cleanup hook cannot safely emit events or reuse hidden webviews.
+            if worker_cleanup_started.load(Ordering::SeqCst) {
+                tauri::process::restart(&worker_restart_env);
+            }
+            install_result
                 .map_err(|error| format!("安装未完成，旧版应用和编辑会话恢复点已保留：{error}"))?;
             worker_app
                 .state::<Updates>()
@@ -711,13 +723,11 @@ async fn install_starshot_update(
         .map_err(|_| "更新任务异常终止；已生成的恢复点仍保留".to_string())?
     }
     .await;
+    if cleanup_started.load(Ordering::SeqCst) {
+        // Also covers a worker panic after cleanup: do not touch AppHandle again.
+        tauri::process::restart(&restart_env);
+    }
     if let Err(error) = result {
-        if cleanup_started.load(Ordering::SeqCst) {
-            return app.state::<Updates>().restart_required(
-                &app,
-                format!("安装器未能成功启动，当前会话已停止写入。请重启星镜后再试。{error}"),
-            );
-        }
         return app.state::<Updates>().failed(&app, error);
     }
     app.state::<Updates>().status()

@@ -56,7 +56,7 @@ const readState = () => page.evaluate(() => {
     background: document.querySelector('.segmented .active')?.textContent,
     preset: document.querySelector('.gradient-swatch[aria-pressed="true"]')?.getAttribute('aria-label'),
     status: document.querySelector('[role="status"]')?.textContent,
-    modal: document.querySelector('[role="dialog"]')?.getAttribute('aria-label') || null,
+    modal: document.querySelector('[role="dialog"]')?.getClientRects().length ? document.querySelector('[role="dialog"]').getAttribute('aria-label') : null,
     hash,
   };
 });
@@ -143,7 +143,7 @@ try {
   });
   assert.deepEqual(shortcuts, { downloads: 0, savePrevented: true, openPrevented: true });
   await page.keyboard.press('Escape');
-  await page.waitForFunction(() => !document.querySelector('[role="dialog"]'));
+  await page.waitForSelector('[role="dialog"]', { state: 'hidden' });
   await page.click('button[aria-label="撤销"]');
   await settle();
   assert.notEqual((await readState()).hash, edited.hash);

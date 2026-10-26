@@ -4,7 +4,7 @@
 
 - 版本由 scripts/version.mjs 校验/递增，同步 npm/Cargo/Tauri 六个版本字段；标签必须 vX.Y.Z。当前开发版本0.2.0；旧0.1.0无updater，须手动升级。
 - src-tauri/src/updater.rs 与 desktop.rs 使用官方 Tauri updater，限制本仓库下载地址，要求更新签名绑定版本。检查手动触发，无启动联网。先验签，再写会话恢复点与旧应用副本，最后安装；失败不伪报成功。
-- 更新/recovery IPC 仅主窗口；捕获、贴图窗口不授予 updater 插件直通权限。忙时后端拒绝图像操作；Windows on_before_exit 发生后仍冻结，避免安装器启动失败后继续编辑。
+- 更新/recovery IPC 仅主窗口；捕获、贴图窗口不授予 updater 插件直通权限。忙时后端拒绝图像操作；Windows on_before_exit 先释放单实例锁再 cleanup。清理后安装器启动失败必须使用预缓存Env做进程级重启，不能再用AppHandle状态或事件，否则应用可能隐藏且无托盘。基于当前Tauri/插件源码核对与编译，此失败路径仍待Windows实机验收。
 - src/update-api.ts 单订阅、revision防陈旧响应、延迟订阅销毁；UpdateSettings.vue 固定确认版本、持有编辑锁，展示阶段/进度/错误；App.vue阻断导入/截图/编辑及慢回调。
 - session.ts 与 recovery.rs 协议schema1，原图/标注/裁剪/样式/背景/主题；6张/48MP原图、每图40MP、背景24MP、边长16384、JSON256MiB，标注2000/文档、路径100000点/文档。字符串按UTF-8字节限额；解析及全部图片预解码后整体替换。
 - 恢复点原子创建，SHA-256校验，只接受内部生成ID，拒绝任意路径、符号链接/损坏清单/未来schema。恢复前先备份当前会话；不持久化撤销历史或贴图窗口。启动只列元数据并提示，不自动载入图片。

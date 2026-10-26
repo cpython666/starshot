@@ -187,11 +187,6 @@ impl Updates {
         })?;
         self.status()
     }
-    pub fn restart_required(&self, app: &AppHandle, error: String) -> Result<UpdateStatus> {
-        self.failed(app, error)?;
-        self.phase(app, "restart-required")?;
-        self.status()
-    }
 }
 
 fn ensure_idle(status: &UpdateStatus) -> Result<()> {

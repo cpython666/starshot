@@ -133,7 +133,7 @@ onBeforeUnmount(() => { disposed = true; monitor.dispose(); emit('busy', false);
       </div>
       <div v-if="installVersion && !needsRestart" ref="confirmation" class="update-confirmation" tabindex="-1" role="region" aria-label="确认安装更新">
         <strong>安装 {{ installVersion }}？</strong>
-        <p>当前编辑已暂停。确认后下载并验证更新、备份当前会话，再安装。Windows 可能自动退出，macOS 需重启生效。重启会清空内存，重新打开后可从升级前恢复点继续；不会自动加载图片。恢复点不含撤销历史。</p>
+        <p>当前编辑已暂停。确认后下载并验证更新、备份当前会话，再安装。Windows 可能自动退出，安装器启动失败时会重新打开星镜，可从已保存的恢复点继续；macOS 需重启生效。重启会清空内存，重新打开后可从升级前恢复点继续；不会自动加载图片。恢复点不含撤销历史。</p>
         <div class="update-actions"><button class="button" :disabled="blocked" @click="cancelConfirmation">暂不安装</button><button class="button primary" :disabled="blocked" @click="install">确认下载、备份并安装 {{ installVersion }}</button></div>
       </div>
       <div v-if="needsRestart" class="update-confirmation" role="status">
