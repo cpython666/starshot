@@ -28,7 +28,7 @@ npm run version:check -- v0.2.1
 
 ## 签名与 GitHub Actions
 
-星镜使用独立的 Tauri 更新签名密钥，不与其他产品共用。公钥位于 tauri.conf.json，私钥只保存在仓库外的本机受限目录以及 GitHub Actions 的 `TAURI_SIGNING_PRIVATE_KEY` Secret；当前密钥无附加密码。需加密密码时另配置 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。不得把私钥、备份、用户图片或日志放入 Git。
+星镜使用独立的 Tauri 更新签名密钥，不与其他产品共用。公钥位于 tauri.conf.json，私钥保存在仓库外的 `~/.local/share/starshot-release/updater.key`（目录0700、文件0600）以及 GitHub Actions 的 `TAURI_SIGNING_PRIVATE_KEY` Secret；当前密钥无附加密码。该本机文件应另做安全备份，Actions Secret 不能读回原值。需加密密码时另配置 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。不得把私钥、备份、用户图片或日志放入 Git。
 
 - `verify.yml`：每次推送/PR校验版本、前后端测试、格式与 macOS Apple Silicon / Windows x64 打包，不需要发行密钥；独立脚本任务执行真实 minisign 验签回归。
 - `release.yml`：已有 `vX.Y.Z` 标签触发，或手动指定已有标签；版本、提交与标签匹配后构建两个平台，要求签名密钥。

@@ -58,7 +58,7 @@ Ego Chromium，仅 `http://127.0.0.1:1430` 本机开发页。
 
 - 六处版本检查为0.2.0，Vue/TypeScript/Vite生产构建通过。
 - Node检查30项：本机常规29通过，真实minisign集成项因PATH未安装而跳过；使用临时官方便携minisign单独运行发布脚本测试15/15全部通过，包括真实Tauri签名、损坏产物和篡改可信版本注释拒绝。测试密钥和便携工具已清理。
-- Rust core10项、desktop12项（含生成后的窗口ACL）通过；cargo check和fmt通过。
+- 本机macOS的Rust core10项、desktop12项（含生成后的窗口ACL）通过；cargo check和fmt通过。
 - 两套GitHub工作流经actionlint1.7.12检查通过；普通验证不使用发行密钥，Ubuntu安全任务强制真实验签测试。
 - 会话测试覆盖原图与编辑状态往返、UTF-8限额、schema/像素/裁剪边界、全部图像预解码、备份失败停止恢复；更新监控覆盖陈旧结果、延迟订阅销毁、固定确认版本和未知下载总量。
 - 浏览器普通预览正确提示桌面更新/恢复不可用，不调用原生更新。
@@ -66,4 +66,14 @@ Ego Chromium，仅 `http://127.0.0.1:1430` 本机开发页。
 - 上述关键交互已整理为 `tests/browser-update-regression.mjs`，四组回归通过；结果在 `artifacts/update-regression/results.json`。沿用既有Ego space/page执行，不创建/结束额外浏览器空间。原导入异步/弹窗五项回归也在0.2.0重新通过。
 - Windows异常分支审查发现：官方updater先调用on_before_exit，再启动安装器；Tauri cleanup会隐藏窗口/清空托盘。已修为清理前释放单实例锁、缓存Env，安装器启动失败或任务异常时直接进程级重启，不再发事件给已清理界面。这项是源码审查和编译验证，尚未实机触发失败分支。
 
-远端双平台构建和浏览器模拟IPC交互正在补验。未测试真实更新包安装或Windows实机升级；模拟/编译结果不得写成已实机升级成功。
+### 最终远端构建与产物
+
+[GitHub Actions run 40315358657](https://github.com/cpython666/starshot/actions/runs/40315358657) 对应最终源码 `3ce733fb72761e510d2833fefd341e769506f073`：macOS Apple Silicon、Windows x64、Ubuntu真实签名校验三个任务全部成功。Windows core9项、desktop11项通过（Unix专属符号链接测试不在Windows运行），普通NSIS安装包生成并上传；macOS生成DMG。
+
+最终macOS DMG为 `Starshot_0.2.0_aarch64.dmg`，4,638,824字节，SHA-256：`1a137ec93785c57a24fa2bfaa12c57b82ba13085b3b4f5798089610d3a56b9e0`。只读挂载检查Info.plist版本和构建号均0.2.0、标识com.starshot.desktop、架构arm64；`codesign --verify --deep --strict`通过。挂载已卸载，未启动或安装该包，ad-hoc签名不等于Apple公证。
+
+最终Windows NSIS包为 `Starshot_0.2.0_x64-setup.exe`，3,712,453字节，SHA-256：`c7395c9f51999dc2d19415b4e34a9ca515306962a61021caceed188480d971ab`。下载的artifact ZIP哈希与GitHub API digest一致；只存档和读取文件，未执行安装包。
+
+产物及本地验证记录保存在Git忽略的 `artifacts/ci-0.2.0/run-40315358657/`。浏览器TaskSpace验收后已关闭。远端已关联并推送main，尚未创建发行标签或Release；最后的验证文档同步仅改文档/知识库，不重复构建。
+
+未测试真实更新包安装、Windows安装器失败后的自动重启或Windows实机使用。平台发行签名/公证尚未配置；模拟和构建通过不代表这些原生验收完成。

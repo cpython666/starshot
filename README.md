@@ -2,7 +2,7 @@
 
 **把灵感，定格成星。** 本地优先的桌面截图、标注、置顶贴图与图片美化工具，使用 Rust / Tauri 2 / Vue 3 / TypeScript。名称、中文界面和五套外观沿用用户的星空系列偏好，作为独立产品开发，不包含桌面宠物。
 
-当前版本 **0.2.0 开发版**，macOS / Windows 同为目标平台。macOS Apple Silicon app / DMG已构建并核验，原创示例的原生导出和部分贴图交互已实测；Windows构建尚未运行。已实现不等于已完成全部原生验收，逐项记录见 [验证记录](docs/verification.md)。
+当前版本 **0.2.0 开发版**，macOS / Windows 同为目标平台。macOS Apple Silicon DMG与Windows x64 NSIS已通过GitHub Actions构建；macOS原创示例的原生导出和部分贴图交互已有实测，Windows实机及真实更新安装仍待验收。逐项记录见 [验证记录](docs/verification.md)。
 
 ## 当前功能
 
