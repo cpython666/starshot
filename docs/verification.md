@@ -77,3 +77,15 @@ Ego Chromium，仅 `http://127.0.0.1:1430` 本机开发页。
 产物及本地验证记录保存在Git忽略的 `artifacts/ci-0.2.0/run-40315358657/`。浏览器TaskSpace验收后已关闭。远端已关联并推送main，尚未创建发行标签或Release；最后的验证文档同步仅改文档/知识库，不重复构建。
 
 未测试真实更新包安装、Windows安装器失败后的自动重启或Windows实机使用。平台发行签名/公证尚未配置；模拟和构建通过不代表这些原生验收完成。
+
+## 2026-10-26 · 0.2.1 菜单栏/托盘图标
+
+用户反馈macOS菜单栏图标难辨认。定位到托盘复用了带深色底板的应用图标，内部轮廓在18pt显示高度下过细。改为独立透明图标：macOS使用36px黑色alpha模板并启用系统模板着色，Windows使用32px紫色主体与白色外缘；四角框与中心星形放大加粗，应用主图标保持原品牌设计。
+
+- 资产文件核验：macOS模板36×36，440个非透明像素全部为黑色，最外一圈透明，无裁边；Windows图标在16/20/24/32px浅深色背景预览中轮廓可辨。
+- `artifacts/tray-icon/comparison.png` 和 `windows-size-review.png` 为原创背景离屏渲染预览，非系统截图；`review.json`记录像素结果。没有把用户提供的菜单栏截图加入Git。
+- 本机Node29项通过，minisign集成项在普通PATH下跳过；Vue/TypeScript/Vite构建、Rust core10项/desktop12项、cargo check和fmt通过。版本已统一0.2.1。
+- [CI run40317718698](https://github.com/cpython666/starshot/actions/runs/40317718698)对应源码6ee700a；macOS Apple Silicon、Windows x64与真实签名校验三个任务全部成功，两平台测试、图标生成和安装包构建通过。
+- 下载产物的ZIP digest与GitHub API一致。macOS DMG为4,767,802字节，SHA-256 `1562e1c3fc46fd6dc4e264f467b34cf185cab9a2867c5485fda7f9aa293cd258`；只读挂载核对版本/构建号0.2.1、com.starshot.desktop、arm64，codesign严格校验通过，已卸载。Windows NSIS为3,758,309字节，SHA-256 `5749425fbdcd0be00642a10a0d78e54b71b9a47ab6fef584eaf34701ab7f87db`。本机产物/核验JSON位于 `artifacts/ci-0.2.1/run-40317718698/`。
+
+未重启用户正在运行的旧应用，未安装或发布。当前菜单栏进程不会热替换编译内嵌图标，需要使用新版重开才生效；系统菜单栏随壁纸自动反色的实机表现、Windows真实托盘高DPI表现仍待原生目检。
