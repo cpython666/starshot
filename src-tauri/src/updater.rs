@@ -25,6 +25,7 @@ pub struct UpdateStatus {
     phase: &'static str,
     available: Option<AvailableUpdate>,
     downloaded: u64,
+    download_ready: bool,
     total: Option<u64>,
     error: Option<String>,
     backup_id: Option<String>,
@@ -33,13 +34,14 @@ pub struct UpdateStatus {
 struct Pending {
     status: UpdateStatus,
     update: Option<Update>,
+    downloaded_bytes: Option<Arc<Vec<u8>>>,
     cleanup_started: Arc<AtomicBool>,
 }
 pub struct Updates(Mutex<Pending>);
 
-impl Updates {
-    pub fn new() -> Self {
-        Self(Mutex::new(Pending {
+impl Pending {
+    fn new() -> Self {
+        Self {
             status: UpdateStatus {
                 revision: 0,
                 current_version: env!("CARGO_PKG_VERSION").into(),
@@ -47,13 +49,96 @@ impl Updates {
                 phase: "idle",
                 available: None,
                 downloaded: 0,
+                download_ready: false,
                 total: None,
                 error: None,
                 backup_id: None,
             },
             update: None,
+            downloaded_bytes: None,
             cleanup_started: Arc::new(AtomicBool::new(false)),
-        }))
+        }
+    }
+    fn begin_check(&mut self) -> Result<()> {
+        ensure_idle(&self.status)?;
+        self.update = None;
+        self.downloaded_bytes = None;
+        self.cleanup_started = Arc::new(AtomicBool::new(false));
+        self.status.available = None;
+        self.status.phase = "checking";
+        self.status.error = None;
+        self.status.downloaded = 0;
+        self.status.download_ready = false;
+        self.status.total = None;
+        self.status.backup_id = None;
+        Ok(())
+    }
+    fn validate_candidate(&self, expected: &str) -> Result<()> {
+        let candidate = self.status.available.as_ref().ok_or("请先检查更新。")?;
+        validate_expected_version(&candidate.version, expected)
+    }
+    fn begin_download(&mut self, expected: &str) -> Result<()> {
+        ensure_idle(&self.status)?;
+        self.validate_candidate(expected)?;
+        if self.downloaded_bytes.is_some() {
+            return Err("更新已下载，请选择安装并重启。".into());
+        }
+        self.status.phase = "downloading";
+        self.status.error = None;
+        self.status.downloaded = 0;
+        self.status.download_ready = false;
+        self.status.total = None;
+        self.status.backup_id = None;
+        Ok(())
+    }
+    fn downloaded(&mut self, expected: &str, bytes: Vec<u8>) -> Result<()> {
+        if self.status.phase != "downloading" {
+            return Err("下载状态已变化，请重新检查更新。".into());
+        }
+        self.validate_candidate(expected)?;
+        if bytes.is_empty() {
+            return Err("下载的更新包为空，无法安装。".into());
+        }
+        self.status.downloaded = bytes.len() as u64;
+        self.status.total = Some(bytes.len() as u64);
+        self.downloaded_bytes = Some(Arc::new(bytes));
+        self.status.download_ready = true;
+        self.status.phase = "ready";
+        self.status.error = None;
+        Ok(())
+    }
+    fn begin_install(&mut self, expected: &str) -> Result<Arc<Vec<u8>>> {
+        ensure_idle(&self.status)?;
+        self.validate_candidate(expected)?;
+        let bytes = self
+            .downloaded_bytes
+            .clone()
+            .ok_or("请先下载并验证更新包。")?;
+        if !self.status.download_ready {
+            return Err("请先下载并验证更新包。".into());
+        }
+        self.status.phase = "backing-up";
+        self.status.error = None;
+        self.status.backup_id = None;
+        Ok(bytes)
+    }
+    fn installed(&mut self) {
+        self.downloaded_bytes = None;
+        self.status.download_ready = false;
+        self.status.phase = "installed";
+    }
+    fn failed(&mut self, error: String) {
+        // Only fully verified downloads enter the cache. A failed backup/install can
+        // retry these same bytes; a failed download never becomes installable.
+        self.status.download_ready = self.downloaded_bytes.is_some();
+        self.status.phase = "error";
+        self.status.error = Some(error);
+    }
+}
+
+impl Updates {
+    pub fn new() -> Self {
+        Self(Mutex::new(Pending::new()))
     }
     fn change<T>(
         &self,
@@ -98,18 +183,7 @@ impl Updates {
             .unwrap_or(true)
     }
     pub fn begin_check(&self, app: &AppHandle) -> Result<()> {
-        self.change(app, |pending| {
-            ensure_idle(&pending.status)?;
-            pending.update = None;
-            pending.cleanup_started = Arc::new(AtomicBool::new(false));
-            pending.status.available = None;
-            pending.status.phase = "checking";
-            pending.status.error = None;
-            pending.status.downloaded = 0;
-            pending.status.total = None;
-            pending.status.backup_id = None;
-            Ok(())
-        })
+        self.change(app, Pending::begin_check)
     }
     pub fn checked(&self, app: &AppHandle, mut update: Option<Update>) -> Result<()> {
         if let Some(update) = &mut update {
@@ -143,21 +217,31 @@ impl Updates {
             .cleanup_started
             .clone())
     }
+    pub fn begin_download(&self, app: &AppHandle, expected: &str) -> Result<Update> {
+        self.change(app, |pending| {
+            let update = pending.update.clone().ok_or("请先检查更新。")?;
+            pending.begin_download(expected)?;
+            Ok(update)
+        })
+    }
+    pub fn downloaded(&self, app: &AppHandle, expected: &str, bytes: Vec<u8>) -> Result<()> {
+        self.change(app, |pending| pending.downloaded(expected, bytes))
+    }
     pub fn begin_install(
         &self,
         app: &AppHandle,
         expected: &str,
-    ) -> Result<(Update, Arc<AtomicBool>)> {
+    ) -> Result<(Update, Arc<Vec<u8>>, Arc<AtomicBool>)> {
         self.change(app, |pending| {
-            ensure_idle(&pending.status)?;
-            let update = pending.update.as_ref().ok_or("请先检查更新。")?;
-            validate_expected_version(&update.version, expected)?;
-            pending.status.phase = "downloading";
-            pending.status.error = None;
-            pending.status.downloaded = 0;
-            pending.status.total = None;
-            pending.status.backup_id = None;
-            Ok((update.clone(), pending.cleanup_started.clone()))
+            let update = pending.update.clone().ok_or("请先检查更新。")?;
+            let bytes = pending.begin_install(expected)?;
+            Ok((update, bytes, pending.cleanup_started.clone()))
+        })
+    }
+    pub fn installed(&self, app: &AppHandle) -> Result<()> {
+        self.change(app, |pending| {
+            pending.installed();
+            Ok(())
         })
     }
     pub fn progress(&self, app: &AppHandle, downloaded: u64, total: Option<u64>) {
@@ -181,8 +265,7 @@ impl Updates {
     }
     pub fn failed(&self, app: &AppHandle, error: String) -> Result<UpdateStatus> {
         self.change(app, |pending| {
-            pending.status.phase = "error";
-            pending.status.error = Some(error);
+            pending.failed(error);
             Ok(())
         })?;
         self.status()
@@ -258,6 +341,91 @@ pub fn preserve_application(default: &Path, backup_id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn candidate() -> Pending {
+        let mut pending = Pending::new();
+        pending.status.available = Some(AvailableUpdate {
+            version: "0.3.0".into(),
+            date: None,
+            notes: None,
+        });
+        pending.status.phase = "available";
+        pending
+    }
+
+    #[test]
+    fn download_must_finish_before_install_and_failure_cannot_become_ready() {
+        let mut pending = candidate();
+        assert!(pending.begin_install("0.3.0").is_err());
+        assert_eq!(pending.status.phase, "available");
+        assert!(pending.begin_download("0.4.0").is_err());
+        pending.begin_download("0.3.0").unwrap();
+        assert_eq!(pending.status.phase, "downloading");
+        assert!(!pending.status.download_ready);
+        assert!(pending.begin_install("0.3.0").is_err());
+        assert!(pending.begin_download("0.3.0").is_err());
+        pending.failed("signature verification failed".into());
+        assert_eq!(pending.status.phase, "error");
+        assert!(!pending.status.download_ready);
+        assert!(pending.downloaded_bytes.is_none());
+        assert!(pending.begin_install("0.3.0").is_err());
+        pending.begin_download("0.3.0").unwrap();
+        assert!(pending.downloaded("0.3.0", Vec::new()).is_err());
+        pending.failed("empty download".into());
+        assert!(!pending.status.download_ready);
+    }
+
+    #[test]
+    fn verified_download_waits_for_confirmation_and_survives_backup_failure() {
+        let mut pending = candidate();
+        pending.begin_download("0.3.0").unwrap();
+        pending.downloaded("0.3.0", vec![1, 2, 3]).unwrap();
+        assert_eq!(pending.status.phase, "ready");
+        assert!(pending.status.download_ready);
+        assert_eq!(pending.status.downloaded, 3);
+        assert!(pending.status.backup_id.is_none());
+        assert!(!pending
+            .cleanup_started
+            .load(std::sync::atomic::Ordering::SeqCst));
+        assert!(ensure_idle(&pending.status).is_ok());
+        assert!(pending.begin_download("0.3.0").is_err());
+        assert!(pending.begin_install("0.4.0").is_err());
+        assert_eq!(pending.status.phase, "ready");
+        let first = pending.begin_install("0.3.0").unwrap();
+        assert_eq!(pending.status.phase, "backing-up");
+        pending.failed("backup disk unavailable".into());
+        assert!(pending.status.download_ready);
+        let retry = pending.begin_install("0.3.0").unwrap();
+        assert!(Arc::ptr_eq(&first, &retry));
+        assert_eq!(retry.as_slice(), &[1, 2, 3]);
+        pending.installed();
+        assert_eq!(pending.status.phase, "installed");
+        assert!(!pending.status.download_ready);
+        assert!(pending.downloaded_bytes.is_none());
+    }
+
+    #[test]
+    fn a_new_check_and_new_process_discard_ready_bytes_and_stale_confirmations() {
+        let mut pending = candidate();
+        pending.begin_download("0.3.0").unwrap();
+        pending.downloaded("0.3.0", vec![1, 2, 3]).unwrap();
+        pending.begin_check().unwrap();
+        assert_eq!(pending.status.phase, "checking");
+        assert!(!pending.status.download_ready);
+        assert!(pending.downloaded_bytes.is_none());
+        assert!(pending.status.available.is_none());
+        pending.status.available = Some(AvailableUpdate {
+            version: "0.4.0".into(),
+            date: None,
+            notes: None,
+        });
+        pending.status.phase = "available";
+        assert!(pending.begin_install("0.3.0").is_err());
+        assert!(pending.begin_install("0.4.0").is_err());
+        let fresh_process = Pending::new();
+        assert!(!fresh_process.status.download_ready);
+        assert!(fresh_process.downloaded_bytes.is_none());
+    }
+
     #[test]
     fn update_validation_rejects_changed_confirmation_and_untrusted_origin() {
         assert!(validate_expected_version("0.3.0", "0.2.0").is_err());
@@ -291,7 +459,7 @@ mod tests {
                 matches!(phase, "installed" | "restart-required")
             );
         }
-        for phase in ["idle", "error", "available", "up-to-date"] {
+        for phase in ["idle", "error", "available", "up-to-date", "ready"] {
             status.phase = phase;
             assert!(ensure_idle(&status).is_ok());
             updates.0.lock().unwrap().status.phase = phase;

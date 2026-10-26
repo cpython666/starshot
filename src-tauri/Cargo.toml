@@ -1,6 +1,6 @@
 [package]
 name = "starshot"
-version = "0.2.1"
+version = "0.2.2"
 description = "星镜 Starshot — 本地截图、贴图与图片美化"
 edition = "2021"
 rust-version = "1.90"

@@ -2,7 +2,7 @@
 
 **把灵感，定格成星。** 本地优先的桌面截图、标注、置顶贴图与图片美化工具，使用 Rust / Tauri 2 / Vue 3 / TypeScript。名称、中文界面和五套外观沿用用户的星空系列偏好，作为独立产品开发，不包含桌面宠物。
 
-当前版本 **0.2.1 开发版**，macOS / Windows 同为目标平台。macOS Apple Silicon DMG与Windows x64 NSIS已有GitHub Actions构建通过记录；macOS原创示例的原生导出和部分贴图交互已有实测，Windows实机及真实更新安装仍待验收。逐项记录见 [验证记录](docs/verification.md)。
+当前版本 **0.2.2 开发版**，macOS / Windows 同为目标平台。macOS Apple Silicon DMG与Windows x64 NSIS已有GitHub Actions构建通过记录；macOS原创示例的原生导出和部分贴图交互已有实测，Windows实机及真实更新安装仍待验收。逐项记录见 [验证记录](docs/verification.md)。
 
 ## 当前功能
 
@@ -14,7 +14,7 @@
 - 贴图拖动、缩放、旋转、翻转、透明度、隐藏工具条；托盘和全局快捷键。
 - 星夜、月白、素白、青苔、暮樱外观。最近图片平时仅保留在内存；手动备份或安装更新前可保存完整编辑恢复点。
 
-- 设置内手动检查签名更新、查看版本说明和下载进度；安装前保存编辑会话与旧应用副本，支持恢复本机会话。
+- 设置内手动检查更新、下载并校验签名；完成后弹出「安装并重启」或「稍后安装」。确认安装时备份最新编辑会话与旧应用副本，安装成功后自动重启，支持恢复本机会话。
 
 源码仓库：[cpython666/starshot](https://github.com/cpython666/starshot)。版本同步、签名和 Release 草稿流程见 [发布指南](docs/releases.md)；尚未公开发行安装包，0.1.0需手动升级才能获得应用内更新。
 

@@ -37,6 +37,7 @@ mod capability_tests {
             ("copy_image", [true, false, false]),
             ("get_update_status", [true, false, false]),
             ("check_starshot_update", [true, false, false]),
+            ("download_starshot_update", [true, false, false]),
             ("install_starshot_update", [true, false, false]),
             ("list_recovery_points", [true, false, false]),
             ("create_recovery_point", [true, false, false]),

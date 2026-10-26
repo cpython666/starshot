@@ -29,7 +29,7 @@ const source = '(' + function ({ currentVersion, candidateVersion }) {
   const style = {background:'solid',backgroundColor:'#223344',gradientFrom:'#b5a0e2',gradientTo:'#617aaa',gradientAngle:135,padding:40,radius:16,borderWidth:2,borderColor:'#ffffff',shadow:16,aspect:'auto'};
   const session = JSON.stringify({schemaVersion:1,theme:'moss',currentId:'fixture-original',documents:[{id:'fixture-original',name:'恢复原创示例.png',dataUrl,width:640,height:360,state:{annotations:[{id:'fixture-annotation',type:'rect',x:40,y:40,width:100,height:80,color:'#ffffff',lineWidth:5}],crop:{x:0,y:0,width:640,height:360},style}}]});
   const original = {id:'before-update-fixture',createdAt:1792972800000,appVersion:'0.1.0',schemaVersion:1,reason:'before-update',totalBytes:session.length,path:'/fixture-only/before-update-fixture.json',compatible:true};
-  const mock = window._starshotMock = {calls:[],points:[original],sessions:{[original.id]:session},backupFailure:false,readFailure:false,installation:null,status:{revision:0,currentVersion,configured:true,phase:'idle',downloaded:0}};
+  const mock = window._starshotMock = {calls:[],points:[original],sessions:{[original.id]:session},backupFailure:false,readFailure:false,installFailure:false,installation:null,status:{revision:0,currentVersion,configured:true,phase:'idle',downloadReady:false,downloaded:0}};
   mock.emit = (patch) => { mock.status = {...mock.status,...patch}; for (const listener of listeners.values()) if(listener.event==='starshot-update-status') callbacks.get(listener.handler)({event:listener.event,id:listener.id,payload:{...mock.status}}); };
   window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {unregisterListener(_event,id){listeners.delete(id);}};
   window.__TAURI_INTERNALS__ = {
@@ -42,16 +42,29 @@ const source = '(' + function ({ currentVersion, candidateVersion }) {
       if(command==='get_app_status')return {captureAvailable:true};
       if(command==='get_update_status')return {...mock.status};
       if(command==='list_recovery_points')return [...mock.points];
-      if(command==='check_starshot_update'){mock.emit({revision:mock.status.revision+1,phase:'available',available:{version:candidateVersion,notes:'原创测试更新说明 <img src=x onerror=alert(1)>',date:'2026-10-26T00:00:00Z'}});return {...mock.status};}
+      if(command==='check_starshot_update'){mock.emit({revision:mock.status.revision+1,phase:'available',downloadReady:false,error:null,available:{version:candidateVersion,notes:'原创测试更新说明 <img src=x onerror=alert(1)>',date:'2026-10-26T00:00:00Z'}});return {...mock.status};}
       if(command==='create_recovery_point'){
         if(mock.backupFailure)throw Error('原创测试：备份磁盘不可用');
         const point={...original,id:`manual-${mock.points.length}`,reason:'manual',createdAt:Date.now(),appVersion:currentVersion,totalBytes:args.session.length,path:'/fixture-only/manual.json'};
         mock.sessions[point.id]=args.session;mock.points.unshift(point);return point;
       }
       if(command==='read_recovery_point')return {point:mock.points.find(p=>p.id===args.id),session:mock.readFailure?'damaged fixture JSON':mock.sessions[args.id]};
+      if(command==='download_starshot_update'){
+        mock.download=args;mock.emit({revision:mock.status.revision+1,phase:'downloading',downloadReady:false,downloaded:20,total:100,error:null});
+        return new Promise((resolve,reject)=>{
+          mock.readyDownload=()=>mock.emit({revision:mock.status.revision+1,phase:'ready',downloadReady:true,downloaded:100,total:100});
+          mock.finishDownload=()=>{if(mock.status.phase!=='ready')mock.readyDownload();resolve({...mock.status});};
+          mock.failDownload=()=>{mock.emit({revision:mock.status.revision+1,phase:'error',downloadReady:false,error:'原创测试：下载签名校验失败'});reject(Error(mock.status.error));};
+        });
+      }
       if(command==='install_starshot_update'){
-        mock.installation=args;mock.emit({revision:10,phase:'downloading',downloaded:20,total:100});
-        return new Promise(resolve=>{mock.finishInstall=()=>{mock.emit({revision:20,phase:'installed',backupId:'upgrade-test',downloaded:100,total:100});resolve({...mock.status});};});
+        if(!mock.status.downloadReady||args.expectedVersion!==mock.status.available?.version)throw Error('测试：没有对应的已验证更新包');
+        mock.installation=args;mock.emit({revision:mock.status.revision+1,phase:'backing-up',error:null});
+        if(mock.installFailure){mock.emit({revision:mock.status.revision+1,phase:'error',error:'原创测试：安装前备份失败',downloadReady:true});return {...mock.status};}
+        return new Promise(resolve=>{
+          mock.beginInstall=()=>mock.emit({revision:mock.status.revision+1,phase:'installing'});
+          mock.finishInstall=()=>{mock.emit({revision:mock.status.revision+1,phase:'installed',downloadReady:false,backupId:'upgrade-test'});resolve({...mock.status});};
+        });
       }
       throw Error('测试禁止真实原生操作：'+command);
     }
@@ -133,33 +146,77 @@ try {
   results.push({ name: 'backup, JSON or pixel decoding failure preserves current edits; successful restore retains every field', pass: true });
 
   await page.click('loc=role:button[name="检查更新"]');
-  await page.waitForSelector('loc=role:button[name="下载并安装"]', { state: 'visible' });
+  await page.waitForSelector('loc=role:button[name="更新"]', { state: 'visible' });
   assert.equal(await page.evaluate(() => document.querySelector('.update-notes').textContent.includes('<img src=x onerror=alert(1)>') && !document.querySelector('.update-notes img')), true);
-  await page.click('loc=role:button[name="下载并安装"]');
-  await page.waitForSelector('loc=role:region[name="确认安装更新"]', { state: 'visible' });
-  assert.equal(await page.evaluate(() => document.querySelector('.workspace').inert), true);
-  await page.click('loc=role:button[name="暂不安装"]');
-  assert.equal(await page.evaluate(() => document.querySelector('.workspace').inert), false);
-  await page.click('loc=role:button[name="下载并安装"]');
-  // A later release announcement cannot change the version the user approved.
-  await page.evaluate(() => window._starshotMock.emit({ revision: 2, available: { version: '99.0.0', notes: 'later test announcement' } }));
-  await page.click(`loc=role:button[name="确认下载、备份并安装 ${candidateVersion}"]`);
+  const backupsBeforeDownload = await page.evaluate(() => window._starshotMock.calls.filter(c => c.command === 'create_recovery_point').length);
+  await page.click('loc=role:button[name="更新"]');
   await page.waitForSelector('loc=css:.update-download progress', { state: 'visible' });
-  const installation = await page.evaluate(() => {
-    const m = window._starshotMock, session = JSON.parse(m.installation.session);
-    return { version: m.installation.expectedVersion, theme: session.theme, name: session.documents[0].name, annotations: session.documents[0].state.annotations.length, progress: document.querySelector('progress').value, locked: document.querySelector('.workspace').inert };
+  assert.deepEqual(await page.evaluate(() => ({ args:window._starshotMock.download, progress:document.querySelector('progress').value, dialog:!!document.querySelector('[data-update-install-dialog][open]'), installation:window._starshotMock.installation, locked:document.querySelector('.workspace').inert })), { args:{expectedVersion:candidateVersion}, progress:20, dialog:false, installation:null, locked:true });
+  await page.evaluate(() => window._starshotMock.failDownload());
+  await page.waitForFunction(() => !document.querySelector('.workspace').inert);
+  assert.equal(await page.evaluate(() => !document.querySelector('[data-update-install-dialog][open]') && document.querySelector('.update-settings').textContent.includes('下载签名校验失败') && !window._starshotMock.installation), true);
+  results.push({ name: 'download sends only version and freezes editing; failed verification never offers installation', pass: true });
+
+  await page.click('loc=role:button[name="更新"]');
+  await page.waitForSelector('loc=css:.update-download progress', { state: 'visible' });
+  await page.evaluate(() => {
+    const m=window._starshotMock,latest=m.status;
+    m.emit({revision:0,phase:'up-to-date',downloaded:0});m.status=latest;
   });
-  assert.deepEqual(installation, { version: candidateVersion, theme: 'moss', name: '恢复原创示例.png', annotations: 1, progress: 20, locked: true });
-  await page.evaluate(() => window._starshotMock.emit({ revision: 2, phase: 'up-to-date', downloaded: 0 }));
   await page.keyboard.press('Escape');
   assert.equal(await page.evaluate(() => !!document.querySelector('.update-download') && document.querySelector('progress').value === 20 && document.querySelector('.workspace').inert && document.querySelector('button[aria-label="关闭弹窗"]').disabled), true);
-  await page.evaluate(() => window._starshotMock.emit({ revision: 11, phase: 'downloading', downloaded: 80, total: 100 }));
+  await page.evaluate(() => {const m=window._starshotMock;m.emit({revision:m.status.revision+1,downloaded:80,total:100,available:{...m.status.available,notes:'新增下载完成后的安装确认，可稍后安装并继续编辑图片。'}});});
   await page.waitForFunction(() => document.querySelector('progress')?.value === 80);
-  await page.evaluate(() => window._starshotMock.finishInstall());
-  await page.waitForSelector('loc=role:button[name="重启星镜"]', { state: 'visible' });
+  await page.evaluate(() => window._starshotMock.readyDownload());
+  await page.waitForSelector('loc=css:[data-update-install-dialog][open]', { state: 'visible' });
+  assert.equal(await page.evaluate(() => document.querySelector('[data-update-install-dialog] .primary').disabled && !window._starshotMock.installation), true);
+  await page.evaluate(() => window._starshotMock.finishDownload());
+  await page.waitForFunction(() => !document.querySelector('[data-update-install-dialog] .primary').disabled);
+  assert.equal(await page.evaluate(() => window._starshotMock.calls.filter(c => c.command === 'create_recovery_point').length), backupsBeforeDownload);
+  console.log(await page.snapshot());
+  await page.screenshot({ path:join(artifacts,'install-and-restart.png') });
+  await page.keyboard.press('Tab');
+  assert.equal(await page.evaluate(() => document.querySelector('[data-update-install-dialog]').contains(document.activeElement)), true);
   await page.keyboard.press('Escape');
-  assert.deepEqual(await page.evaluate(() => ({ locked: document.querySelector('.workspace').inert, closeDisabled: document.querySelector('button[aria-label="关闭弹窗"]').disabled, nativeCalls: window._starshotMock.calls.filter(c => ['start_capture', 'copy_image', 'save_image', 'restart_app'].includes(c.command)).length })), { locked: true, closeDisabled: true, nativeCalls: 0 });
-  results.push({ name: 'plain-text release notes; fixed approved version/session; stale progress ignored; restart state remains frozen', pass: true });
+  await page.waitForFunction(() => !document.querySelector('[data-update-install-dialog][open]') && !document.querySelector('.workspace').inert);
+  await page.click('loc=role:button[name="刷新本机状态"]');
+  await page.waitForFunction(() => document.querySelector('.update-settings').getAttribute('aria-busy') === 'false');
+  assert.equal(await page.evaluate(() => !!document.querySelector('[data-update-install-dialog][open]')), false);
+  results.push({ name: 'ready event opens accessible install dialog only after verified download; repeated ready refresh does not reopen after Escape', pass: true });
+
+  await page.click('loc=role:button[name="月白"]');
+  await page.click('loc=role:button[name="关闭弹窗"]');
+  console.log(await page.snapshot());
+  await page.focus('loc=css:input[aria-label="四周留白"]');
+  await page.keyboard.press('End');
+  await page.waitForFunction(() => document.querySelector('input[aria-label="四周留白"]').value === '200');
+  await page.click('loc=role:button[name="设置与帮助"]');
+  await page.click('loc=role:button[name="安装并重启"]');
+  await page.waitForSelector('loc=css:[data-update-install-dialog][open]', { state: 'visible' });
+  await page.click('loc=role:button[name="稍后安装"]');
+  await page.waitForFunction(() => !document.querySelector('[data-update-install-dialog][open]') && !document.querySelector('.workspace').inert);
+  await page.click('loc=role:button[name="安装并重启"]');
+  await page.evaluate(() => {window._starshotMock.installFailure=true;});
+  await page.click('loc=css:[data-update-install-dialog][open] .primary');
+  await page.waitForFunction(() => document.querySelector('[data-update-install-dialog] [role="alert"]')?.textContent.includes('安装前备份失败') && !document.querySelector('[data-update-install-dialog] .primary').disabled);
+  const installation = await page.evaluate(() => {
+    const m=window._starshotMock,session=JSON.parse(m.installation.session);
+    return {version:m.installation.expectedVersion,theme:session.theme,name:session.documents[0].name,annotations:session.documents[0].state.annotations.length,padding:session.documents[0].state.style.padding,locked:document.querySelector('.workspace').inert,ready:m.status.downloadReady};
+  });
+  assert.deepEqual(installation,{version:candidateVersion,theme:'moon',name:'恢复原创示例.png',annotations:1,padding:200,locked:true,ready:true});
+  assert.equal(await page.evaluate(() => document.querySelector('input[aria-label="四周留白"]').value === '200' && document.documentElement.dataset.theme === 'moon'),true);
+  await page.evaluate(() => {window._starshotMock.installFailure=false;});
+  await page.click('loc=css:[data-update-install-dialog][open] .primary');
+  await page.waitForFunction(() => typeof window._starshotMock.beginInstall === 'function');
+  await page.evaluate(() => window._starshotMock.beginInstall());
+  await page.keyboard.press('Escape');
+  assert.equal(await page.evaluate(() => !!document.querySelector('[data-update-install-dialog][open]') && document.querySelector('[data-update-install-dialog] .primary').disabled && !document.querySelector('.update-download')),true);
+  await page.evaluate(() => window._starshotMock.finishInstall());
+  await page.waitForSelector('loc=css:[data-update-install-dialog][open] button', { state: 'visible' });
+  await page.waitForFunction(() => document.querySelector('#install-update-heading').textContent.includes('正在重启'));
+  await page.keyboard.press('Escape');
+  assert.deepEqual(await page.evaluate(() => ({locked:document.querySelector('.workspace').inert,closeDisabled:document.querySelector('button[aria-label="关闭弹窗"]').disabled,downloads:window._starshotMock.calls.filter(c => c.command==='download_starshot_update').length,installs:window._starshotMock.calls.filter(c => c.command==='install_starshot_update').length,nativeCalls:window._starshotMock.calls.filter(c => ['start_capture','copy_image','save_image','restart_app'].includes(c.command)).length})),{locked:true,closeDisabled:true,downloads:2,installs:2,nativeCalls:0});
+  results.push({ name: 'later resumes editing; install captures newest edits; backup failure retains cached package and retries without downloading; successful install awaits automatic restart', pass: true });
   await fs.writeFile(join(artifacts, 'results.json'), JSON.stringify({ layer: 'real Chromium App with simulated IPC and original pixels', results }, null, 2));
   console.log({ results, artifact: join(artifacts, 'results.json') });
   console.log(await page.snapshot());

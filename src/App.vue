@@ -88,7 +88,7 @@ function setUpdateBusy(value:boolean){
   updateBusy.value=value
 }
 function receiveUpdateStatus(value:UpdateStatus){
-  if(['downloading','backing-up','installing','installed','restart-required'].includes(value.phase))modal.value='settings'
+  if(['downloading','ready','backing-up','installing','installed','restart-required'].includes(value.phase))modal.value='settings'
 }
 function embeddedBackground(background?:HTMLImageElement){
   if(!background)return undefined

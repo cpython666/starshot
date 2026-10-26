@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { appVersion, initialUpdateStatus, watchStarshotUpdates, type UpdateStatus, type UpdateTransport } from '../src/update-api.ts';
-import { downloadProgress, fileSize, updateInProgress, updateNeedsRestart } from '../src/update-state.ts';
+import { downloadProgress, fileSize, updateCanInstall, updateInProgress, updateNeedsRestart } from '../src/update-state.ts';
 
 const state = (revision: number, phase: UpdateStatus['phase'] = 'idle'): UpdateStatus => ({ ...initialUpdateStatus(), revision, phase });
 
@@ -28,16 +28,33 @@ test('update monitor subscribes once, ignores stale command results, and dispose
   assert.equal(stopCount, 2);
 });
 
-test('install sends the explicitly approved version and frozen session after listener registration', async () => {
+test('download sends only the selected version; installation is a separate explicit command with the latest session', async () => {
   const calls: unknown[] = [];
   const transport: UpdateTransport = {
     async listen() { calls.push('subscribe'); return () => {}; },
-    async invoke(command, args) { calls.push([command, args]); return state(1, 'installed'); },
+    async invoke(command, args) { calls.push([command, args]); return state(calls.length, command === 'download_starshot_update' ? 'ready' : 'installed'); },
   };
   const monitor = watchStarshotUpdates(() => {}, transport);
-  await monitor.install('0.2.0', '{"frozen":true}');
-  assert.deepEqual(calls, ['subscribe', ['install_starshot_update', { expectedVersion: '0.2.0', session: '{"frozen":true}' }]]);
+  await monitor.download('3.0.1');
+  assert.deepEqual(calls, ['subscribe', ['download_starshot_update', { expectedVersion: '3.0.1' }]]);
+  await monitor.install('3.0.1', '{"latestEdits":true}');
+  assert.deepEqual(calls.at(-1), ['install_starshot_update', { expectedVersion: '3.0.1', session: '{"latestEdits":true}' }]);
+  assert.equal(calls.filter(call => call === 'subscribe').length, 1);
   monitor.dispose();
+});
+
+test('only a verified cached candidate permits installation, including retries after a backup failure', () => {
+  const ready = { ...state(1, 'ready'), available: { version: '3.0.1' }, downloadReady: true };
+  assert.equal(updateCanInstall(ready), true);
+  assert.equal(updateInProgress(ready), false);
+  assert.equal(updateNeedsRestart(ready), false);
+  assert.equal(updateCanInstall({ ...ready, phase: 'error' }), true);
+  assert.equal(updateCanInstall({ ...ready, downloadReady: false }), false);
+  assert.equal(updateCanInstall({ ...ready, available: null }), false);
+  for (const phase of ['available', 'checking', 'downloading', 'backing-up', 'installing', 'installed', 'restart-required'] as const) {
+    assert.equal(updateCanInstall({ ...ready, phase }), false);
+  }
+  assert.equal(updateCanInstall({ ...ready, phase: 'error', downloadReady: false }), false);
 });
 
 test('progress and write protection cover unknown totals, overshoot and pending restart', () => {

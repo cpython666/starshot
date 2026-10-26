@@ -617,6 +617,7 @@ async fn check_starshot_update(app: AppHandle, window: WebviewWindow) -> Result<
         let update = app
             .updater_builder()
             .timeout(Duration::from_secs(30))
+            .restart_after_install(true)
             .on_before_exit(move || {
                 // Windows invokes this immediately before launching its installer. A later
                 // launch failure must restart the preserved app without reusing this session.
@@ -642,21 +643,13 @@ async fn check_starshot_update(app: AppHandle, window: WebviewWindow) -> Result<
     app.state::<Updates>().status()
 }
 #[tauri::command]
-async fn install_starshot_update(
+async fn download_starshot_update(
     app: AppHandle,
     window: WebviewWindow,
     expected_version: String,
-    session: String,
 ) -> Result<UpdateStatus> {
     main_only(&window)?;
-    // Fail without starting network activity when the supplied session cannot be preserved.
-    let session = tauri::async_runtime::spawn_blocking(move || {
-        recovery::validate_session(&session)?;
-        Ok::<_, String>(session)
-    })
-    .await
-    .map_err(|_| "检查编辑会话失败")??;
-    let (update, cleanup_started) = {
+    let update = {
         let context = app.state::<Context>();
         let _operation = context
             .operation
@@ -664,14 +657,13 @@ async fn install_starshot_update(
             .map_err(|_| "另一项编辑操作仍在进行")?;
         no_active_capture(&context)?;
         app.state::<Updates>()
-            .begin_install(&app, &expected_version)?
+            .begin_download(&app, &expected_version)?
     };
-    // Cache process-only restart data before cleanup invalidates Tauri resources.
-    let restart_env = app.env();
     let result: Result<()> = async {
         let mut downloaded = 0_u64;
         let mut last_progress = Instant::now();
-        // The official plugin verifies the signature (including signed version) here.
+        // The plugin returns only after signature and signed-version validation.
+        // This command never snapshots, installs, or restarts the application.
         let bytes = update
             .download(
                 |chunk, total| {
@@ -688,8 +680,45 @@ async fn install_starshot_update(
             .await
             .map_err(|error| format!("下载或签名校验失败，未开始安装：{error}"))?;
         app.state::<Updates>()
-            .progress(&app, downloaded, Some(downloaded));
-        app.state::<Updates>().phase(&app, "backing-up")?;
+            .downloaded(&app, &expected_version, bytes)
+    }
+    .await;
+    if let Err(error) = result {
+        return app.state::<Updates>().failed(&app, error);
+    }
+    // Foreground the ready confirmation after verification, including from the tray.
+    // Window focus is best-effort and must not invalidate the verified cache.
+    show_main(&app);
+    app.state::<Updates>().status()
+}
+#[tauri::command]
+async fn install_starshot_update(
+    app: AppHandle,
+    window: WebviewWindow,
+    expected_version: String,
+    session: String,
+) -> Result<UpdateStatus> {
+    main_only(&window)?;
+    // Snapshot the latest confirmed editor session; downloads do not capture stale edits.
+    let session = tauri::async_runtime::spawn_blocking(move || {
+        recovery::validate_session(&session)?;
+        Ok::<_, String>(session)
+    })
+    .await
+    .map_err(|_| "检查编辑会话失败")??;
+    let (update, bytes, cleanup_started) = {
+        let context = app.state::<Context>();
+        let _operation = context
+            .operation
+            .try_lock()
+            .map_err(|_| "另一项编辑操作仍在进行")?;
+        no_active_capture(&context)?;
+        app.state::<Updates>()
+            .begin_install(&app, &expected_version)?
+    };
+    // Cache process-only restart data before cleanup invalidates Tauri resources.
+    let restart_env = app.env();
+    let result: Result<()> = async {
         let worker_app = app.clone();
         let worker_cleanup_started = cleanup_started.clone();
         let worker_restart_env = restart_env.clone();
@@ -706,7 +735,7 @@ async fn install_starshot_update(
             worker_app
                 .state::<Updates>()
                 .phase(&worker_app, "installing")?;
-            let install_result = update.install(bytes);
+            let install_result = update.install(bytes.as_slice());
             // Windows success exits inside the updater. A returned failure after its
             // cleanup hook cannot safely emit events or reuse hidden webviews.
             if worker_cleanup_started.load(Ordering::SeqCst) {
@@ -714,9 +743,7 @@ async fn install_starshot_update(
             }
             install_result
                 .map_err(|error| format!("安装未完成，旧版应用和编辑会话恢复点已保留：{error}"))?;
-            worker_app
-                .state::<Updates>()
-                .phase(&worker_app, "installed")?;
+            worker_app.state::<Updates>().installed(&worker_app)?;
             Ok(())
         })
         .await
@@ -730,7 +757,8 @@ async fn install_starshot_update(
     if let Err(error) = result {
         return app.state::<Updates>().failed(&app, error);
     }
-    app.state::<Updates>().status()
+    // macOS reaches here; Windows exits and relaunches via its installer.
+    app.restart();
 }
 #[tauri::command]
 async fn list_recovery_points(app: AppHandle, window: WebviewWindow) -> Result<Vec<RecoveryPoint>> {
@@ -936,6 +964,7 @@ pub fn run() {
             get_app_status,
             get_update_status,
             check_starshot_update,
+            download_starshot_update,
             install_starshot_update,
             list_recovery_points,
             create_recovery_point,
