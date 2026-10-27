@@ -2,7 +2,7 @@
 
 用户于2026-10-26明确要求迁入星笺的更新与版本机制、关联远端，并确认公开仓库提供更新下载。仓库为 https://github.com/cpython666/starshot。详细操作和验收边界在 docs/releases.md / docs/verification.md。
 
-- 版本由 scripts/version.mjs 校验/递增，同步 npm/Cargo/Tauri 六个版本字段；标签必须 vX.Y.Z。当前开发版本0.3.0；0.2.2引入下载后安装确认，旧0.1.0无updater，须手动升级。
+- 版本由 scripts/version.mjs 校验/递增，同步 npm/Cargo/Tauri 六个版本字段；标签必须 vX.Y.Z。当前版本0.3.0，已公开为开发预览；0.2.2引入下载后安装确认，旧0.1.0无updater，须手动升级。
 - src-tauri/src/updater.rs 与 desktop.rs 使用官方 Tauri updater，限制本仓库下载地址，要求更新签名绑定版本。检查和下载均手动触发，无启动联网。0.2.2 的 download_starshot_update 只下载验签，成功才缓存字节并进入 ready/downloadReady，再唤起主窗口显示「安装并重启」；下载阶段不保存会话、不安装、不重启。
 - 选择「稍后安装」可继续编辑；已验签包只保留本次运行，重查或退出清空。install_starshot_update 只消费同一候选版本的缓存，点击安装时获取最新会话，先保存恢复点和旧应用副本，再安装并自动重启；备份失败保留编辑与缓存以供重试。macOS调用app.restart，Windows显式restart_after_install(true)。
 - 更新/recovery IPC 仅主窗口；捕获、贴图窗口不授予 updater 插件直通权限。忙时后端拒绝图像操作；Windows on_before_exit 先释放单实例锁再 cleanup。清理后安装器启动失败必须使用预缓存Env做进程级重启，不能再用AppHandle状态或事件，否则应用可能隐藏且无托盘。基于当前Tauri/插件源码核对与编译，此失败路径仍待Windows实机验收。
@@ -17,6 +17,15 @@
 发布流程不覆盖已有草稿资产；重跑前需人工检查或删除旧草稿。恢复点列表的 compatible 仅指 schema 兼容；读取时才强制校验 SHA-256、字段和图片内容。
 
 自动测试、浏览器模拟IPC、平台构建与真实升级验收分别记录，不把模拟安装或编译通过写成实机升级成功。
+
+## 当前发行状态（2026-10-27）
+
+- `v0.3.0`标签/应用源码为 `cd7a69107c6473d1262d67d8666268756f754e52`，普通验证40365269047与签名发行40365419560全部成功。Node44项含真实minisign全通过；macOS core17/desktop31通过（另1项手动模型测试忽略），Windows core15/desktop29通过；Windows实际NSIS隔离安装/卸载及安装后的离线worker通过。
+- 2026-10-26 17:23:11 UTC公开为prerelease；固定tag下载可用，不成为稳定updater的latest。Homebrew Tap提交0b2d188已公开，真实最终DMG的下载、隔离安装、版本/签名核对与卸载通过。online audit仅拒绝GitHub prerelease政策，不宣称audit全绿。哈希与具体证据统一见docs/verification.md和docs/homebrew.md。
+- Windows模型构建前由scripts/prepare-ocr-models.mjs从固定官方来源下载并校验大小/哈希；二进制模型Git忽略，Windows程序编译嵌入，无运行时下载。两模型共12,226,852字节；macOS使用系统Vision。
+- 0.3.0已补跑0.2.2最终确认门控的7组浏览器回归；这仍是模拟IPC。旧版真实升级/恢复、完整原生GUI、多显示器/混合DPI、权限/全局热键/开机启动矩阵和平台发行证书仍未全部验收。预览发行不能作为正式稳定版验收记录。
+
+## 历史验证（仅适用0.2.2）
 
 0.2.2本机Rust core10项、desktop16项（含实际Pending转移、确认门控与窗口ACL）通过。前端单元、浏览器模拟IPC、双平台构建与最终产物SHA-256见docs/verification.md；真实升级、失败后重启和平台证书仍待验收，未创建tag或正式Release。
 

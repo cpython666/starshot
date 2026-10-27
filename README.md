@@ -18,9 +18,19 @@
 
 - 设置内手动检查更新、下载并校验签名；完成后弹出「安装并重启」或「稍后安装」。确认安装时备份最新编辑会话与旧应用副本，安装成功后自动重启，支持恢复本机会话。
 
-源码仓库：[cpython666/starshot](https://github.com/cpython666/starshot)。版本同步与签名流程见 [发布指南](docs/releases.md)，Homebrew准备和上线状态见 [分发说明](docs/homebrew.md)；0.1.0需手动升级才能获得应用内更新。
+源码仓库：[cpython666/starshot](https://github.com/cpython666/starshot)。版本同步与签名流程见 [发布指南](docs/releases.md)，[0.3.0 开发预览版已公开](https://github.com/cpython666/starshot/releases/tag/v0.3.0)，Homebrew安装与验收边界见 [分发说明](docs/homebrew.md)；0.1.0需手动升级才能获得应用内更新。
 
 浏览器可以完整体验导入、原创示例区域选择、标注、美化与下载；浏览器中的截图为明确标示的原创示例，真正桌面截图及置顶贴图仅原生版提供。
+
+## 安装开发预览版
+
+Apple Silicon Mac（macOS 12+）：
+
+```sh
+brew install --cask cpython666/tap/starshot
+```
+
+Windows x64 安装包及 macOS DMG 见 [0.3.0 下载](https://github.com/cpython666/starshot/releases/tag/v0.3.0)。这是开发预览：macOS 尚未 Apple 公证，Windows 尚无发行者签名；不推送到应用内稳定更新通道。Windows 离线 OCR 模型合计约 12.2 MB，随安装包内置，主要识别拉丁文字和数字；macOS 使用系统 Vision，无需下载模型。
 
 ## 运行
 

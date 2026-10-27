@@ -52,4 +52,4 @@ Tauri 更新签名与平台代码签名不是同一件事。目前 macOS 默认 
 
 ## 0.3.0 Homebrew开发预览
 
-用户明确要求完成Homebrew分发。本轮准备以公开prerelease承载固定版本安装包，由Cask固定tag下载；不将其设为最新稳定版。预览版不改变应用内稳定更新地址，也不等于旧版升级、平台签名或全部原生矩阵已经验收。实际发布结果见[Homebrew指南](homebrew.md)与[验证记录](verification.md)。
+用户明确要求完成Homebrew分发。[v0.3.0](https://github.com/cpython666/starshot/releases/tag/v0.3.0)已于2026-10-26 17:23:11 UTC公开为prerelease，标签对应源码 `cd7a691`。双平台安装包、Tauri更新签名与校验清单齐全，Cask已在 `cpython666/homebrew-tap` 的 `0b2d188`发布并通过隔离安装/卸载；没有设为最新稳定版。预览版不改变应用内稳定更新地址，也不等于旧版升级、平台签名或全部原生矩阵已经验收。实际发布结果见[Homebrew指南](homebrew.md)与[验证记录](verification.md)。

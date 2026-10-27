@@ -2,7 +2,7 @@
 
 星镜使用已有的公开安装源 [cpython666/homebrew-tap](https://github.com/cpython666/homebrew-tap)，目标文件为 `Casks/starshot.rb`；现有 `Casks/starclip.rb` 独立保留。2026-10-26 核对远端默认分支为 `main`，基线提交为 `e11f8f06a43e4754855a8f101a39bc712aebdf08`，仓库没有额外 AGENTS 或发布工作流。
 
-本次目标是 `v0.3.0` 开发预览版，macOS Apple Silicon 安装包名为 `Starshot_0.3.0_aarch64.dmg`。本文和生成器准备完成不代表安装源已经发布；最终版本、公开下载和安装验收以发布记录为准。
+[v0.3.0 开发预览版](https://github.com/cpython666/starshot/releases/tag/v0.3.0)已于2026-10-27北京时间公开。Tap的 `Casks/starshot.rb` 与安装说明已发布在提交 [`0b2d188`](https://github.com/cpython666/homebrew-tap/commit/0b2d18875071fa37f3df82bff423cca3acdafdbc)，可执行 `brew install --cask cpython666/tap/starshot`。仅提供Apple Silicon、macOS 12+；Windows使用独立NSIS安装包。
 
 ## 生成 Cask
 
@@ -55,16 +55,18 @@ brew uninstall --cask cpython666/tap/starshot
 
 GitHub 的 prerelease 可以通过固定 tag 下载，但不能成为 latest release。若 `v0.3.0` 标为预览，Cask 下载可用，不意味着当前 `/releases/latest/download/latest.json` 应用内更新地址已经指向它。[GitHub Release 规则](https://docs.github.com/en/rest/releases/releases#create-a-release)
 
-## 本轮已验证与待验证
+## 0.3.0 已验证结果
 
-- 生成器单元测试已通过：从原创固定字节计算哈希、拒绝版本/tag/文件名错误和无效 DMG 标识，失败不覆盖已有 Cask。
-- 用已有最终 0.2.2 DMG 离线演练生成，得到的 SHA-256 与原记录一致；`brew style` 和 `ruby -c` 通过。演练文件在 `artifacts/homebrew-check/Casks/starshot.rb`，未用于发布。
-- 0.3.0 的最终 DMG、公开 URL、online audit、fetch 和安装验收仍须使用最终产物执行；没有在此准备步骤安装、提交、推送或发布。
+- 最终包 `Starshot_0.3.0_aarch64.dmg` 为4,976,926字节，SHA-256为 `546824f9ebf3bcda889fc7ac841b23d6ea530aa473bb01bf9b25863b1e11aa4d`；生成Cask和匿名公开下载的文件均匹配该值。
+- DMG只读挂载核对版本/构建号0.3.0、标识com.starshot.desktop、arm64、附带模型许可；`codesign --verify --deep --strict`通过。这是ad-hoc签名，不代表Apple公证。
+- 最终Cask的Ruby语法、`brew style`、`brew fetch --cask cpython666/tap/starshot`通过。在线严格audit返回1，唯一审查项为 `v0.3.0 is a GitHub pre-release.`；因此不记为audit全部通过，也不为消除提示改成稳定发行。
+- Homebrew实际安装到Git忽略的 `artifacts/homebrew-install-0.3.0/`，使用 `brew info --cask --json=v2`确认安装版本，读取应用Info.plist并严格校验签名；卸载后应用及Cask安装登记均已移除。没有启动应用、移除quarantine或替换用户已有应用。后续隔离测试设置 `HOMEBREW_NO_INSTALL_CLEANUP=1`，避免安装触发缓存清理。
+- 本机实际Tap已快进到公开提交，Cask与生成文件逐字节一致。证据在忽略的 `artifacts/release-0.3.0/`，包括 `brew-install-verification.json`、下载及audit日志；双平台发行证据见[验证记录](verification.md)。
 
 ## Windows / WinGet 后续
 
 WinGet 接入是单独的清单和审核流程，不由 Homebrew Tap 覆盖。Microsoft 要求清单具备准确的发布者、应用许可、版本、安装 URL、SHA-256 和安装类型；NSIS 对应 `nullsoft`。URL 应指向发布者自己的公开安装包。[清单格式](https://learn.microsoft.com/en-us/windows/package-manager/package/manifest)、[仓库政策](https://learn.microsoft.com/en-us/windows/package-manager/package/windows-package-manager-policies)
 
-当前星镜根目录的 `LICENSE` 已声明应用使用 MIT，第三方依赖和 OCR 模型保留各自许可；应引用应用许可，不套用 Tap 自身的许可。最终 EXE 的发行者、应用显示版本、安装范围和卸载注册项仍需要实际包核对。核实这些信息后，再用 `wingetcreate new` 或官方 YAMLCreate 生成本地清单，不选择自动提交。
+当前星镜根目录的 `LICENSE` 已声明应用使用 MIT，第三方依赖和 OCR 模型保留各自许可；应引用应用许可，不套用 Tap 自身的许可。0.3.0最终EXE已在Windows CI中实际隔离安装/卸载：发行者 `starshot`、版本0.3.0、x64、当前用户安装，卸载项及ProductCode为 `Starshot`；安装后的离线OCR worker也通过。后续可据这些实际证据用 `wingetcreate new` 或官方 YAMLCreate 生成本地清单，不选择自动提交。
 
 生成后在 Windows 上执行 `winget validate <清单目录>`，并用官方 SandboxTest 检查静默安装、卸载和权限场景。提交 Microsoft 社区仓库的 PR 后还需自动及人工审核；本轮未创建外部 PR，也未将缺字段的模板标成可上架清单。[提交和验收流程](https://learn.microsoft.com/en-us/windows/package-manager/package/repository)

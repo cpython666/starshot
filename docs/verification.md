@@ -115,7 +115,7 @@ Ego Chromium，仅 `http://127.0.0.1:1430` 本机开发页。
 
 ## 2026-10-27 · 0.3.0 编辑、敏感信息遮盖与桌面基础体验
 
-本轮按用户要求新增本地敏感信息识别、对象编辑与PNG贴纸、偏好/预设、退出备份、桌面设置、备份管理、分享介绍图及Homebrew分发准备；明确不做项目文件导入导出。以下记录区分已执行检查与待验收项。
+本轮按用户要求新增本地敏感信息识别、对象编辑与PNG贴纸、偏好/预设、退出备份、桌面设置、备份管理、分享介绍图及Homebrew分发；明确不做项目文件导入导出。以下记录区分已执行检查与待验收项。
 
 - 本机 Node 44项：43通过、1项真实minisign测试因普通PATH没有工具而跳过；Vue/TypeScript/Vite生产构建通过。Rust core17/17，desktop31通过、1项离线模型手动测试忽略；cargo check及fmt通过。
 - macOS Vision默认测试使用仓库原创固定像素图，识别数字/邮箱及坐标通过。Windows使用的官方固定模型已在macOS单独实际运行并识别同一原创图；这项不等同于Windows原生worker验收。模型共12,226,852字节，固定来源、SHA-256和CC-BY-SA-4.0许可见models目录。
@@ -124,4 +124,28 @@ Ego Chromium，仅 `http://127.0.0.1:1430` 本机开发页。
 - 构建独立标识com.starshot.verify-030的macOS验收应用，codesign严格检查通过，无安装到Applications或替换旧应用。空白窗口关闭后关联WebContent进程退出，应用重新唤起重新创建编辑器。一次内存样本：就绪67.9MiB、关闭后52.5MiB（含主进程及关联WebKit，GPU/Networking仍保留）；不是长期稳定内存或全场景上限。后续窗口状态被用户操作改变，未完成原生UI的OCR→应用遮盖→备份退出闭环；没有读取或保存截图浮层画面。
 - 可复用回归在tests；日志/截图/下载/内存证据仅保存在忽略的artifacts。全部主动测试使用原创例图与固定生成像素，没有读取真实剪贴板。
 
-Windows最终安装/卸载、worker与双平台发布包正在CI验收；真实更新从旧版本安装、混合DPI、多显示器、系统权限、全局热键、开机启动与平台代码签名仍不应从自动测试推定通过。Homebrew的最终公开URL、下载校验和隔离安装结果将在完成后补记。
+### 最终CI与发行包
+
+最终应用源码/标签为 `cd7a69107c6473d1262d67d8666268756f754e52`。普通验证[40365269047](https://github.com/cpython666/starshot/actions/runs/40365269047)和签名发行[40365419560](https://github.com/cpython666/starshot/actions/runs/40365419560)全部任务成功；后续文档同步不改变这些安装包的源码。
+
+- Ubuntu签名任务Node44/44通过，含真实minisign及损坏文件/篡改版本拒绝测试；macOS Node43通过1跳过、Rust core17通过、desktop31通过1忽略；Windows Node43通过1跳过、Rust core15/desktop29通过，包含实际离线模型识别。前端生产构建、Rust格式检查及双平台安装包构建通过。
+- Windows最终发布EXE及安装后的EXE分别运行离线OCR worker，原创固定像素上的数字/邮箱与坐标通过；测试不启动GUI、不截图、不读剪贴板。NSIS实际静默安装/卸载均返回0；校验x64、版本0.3.0、发布者starshot、当前用户范围、卸载登记Starshot与许可资源，卸载登记/主程序已移除。CI已有WebView2；不覆盖缺运行时或旧版本升级场景。
+- Windows安装证据 `artifacts/ci-0.3.0/release-windows-installer/2d026cacb0654d9ba87d7dedede6af15/result.json`：success=true、errors为空，安装/元数据/安装后OCR/卸载各阶段通过；其中安装包SHA-256等于下表。
+- GitHub artifact ZIP的下载digest与API一致；发行附件的7项SHA256SUMS逐项通过，latest.json两平台URL和签名文本匹配。Mac DMG只读挂载核对版本/构建号0.3.0、com.starshot.desktop、arm64和许可资源；codesign严格检查通过并已卸载。公开DMG匿名下载字节与最终包一致。
+
+| 最终安装包 | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| Starshot_0.3.0_aarch64.dmg | 4,976,926 | `546824f9ebf3bcda889fc7ac841b23d6ea530aa473bb01bf9b25863b1e11aa4d` |
+| Starshot_0.3.0_x64-setup.exe | 16,335,455 | `e437c0ac62f125c0947d9b7192a1e9d6c2500bb9d37437a526b8e399df39b0a1` |
+
+模型不再作为Git二进制提交；构建前 `npm run models:prepare`下载官方固定文件，按大小和SHA-256校验，验证通过才替换目标；同哈希缓存跳过。新空目录下载与两平台CI均通过。Windows仍将12,226,852字节模型编译嵌入，不在使用OCR时联网。证据和许可来源见 `scripts/prepare-ocr-models.mjs`、`src-tauri/models/ocrs/NOTICE.md` 与忽略的 `artifacts/model-download-verification.log`。
+
+### 公开预览与Homebrew
+
+[v0.3.0](https://github.com/cpython666/starshot/releases/tag/v0.3.0)已于2026-10-26 17:23:11 UTC（北京时间10月27日）公开，isDraft=false、isPrerelease=true，未设为最新稳定版。独立Tauri更新签名已经验证；macOS仍是ad-hoc且未公证，Windows没有平台发行签名。
+
+Homebrew Tap的公开提交为[0b2d188](https://github.com/cpython666/homebrew-tap/commit/0b2d18875071fa37f3df82bff423cca3acdafdbc)，最终Cask采用上表DMG哈希。Ruby语法、brew style、公开下载和brew fetch通过。online audit唯一失败为 `v0.3.0 is a GitHub pre-release.`，如实保留预览标记，不宣称audit全部通过。
+
+Homebrew真实安装到仓库忽略的隔离目录；brew info的安装版本、应用Info.plist和codesign严格校验通过，卸载后应用及Cask安装登记均不存在。未启动该发行应用或替换已有应用。首轮安装验证器误用只适用于formulae的 `brew list --versions`，后来使用 `brew info --cask --json=v2`完整重跑并记录成功；使用 `HOMEBREW_NO_INSTALL_CLEANUP=1`避免后续安装清理缓存。结果在 `artifacts/release-0.3.0/brew-install-verification.json`。安装说明与边界见[Homebrew指南](homebrew.md)。
+
+仍未完整验收：旧版真实更新安装及失败恢复、原生GUI的OCR→应用遮盖→备份退出全链路、混合DPI/多显示器、系统权限、全局热键、开机启动和平台信任提示。浏览器、单元、真实worker与隔离安装各自覆盖不同层级，不能合并表述为完整原生使用已通过；本轮交付为开发预览。
