@@ -13,9 +13,12 @@ https://github.com/robertknight/ocrs/blob/2dbc1f840e47d45630ef6060499138bf597a9f
 Retrieved 2026-10-26; the original files report a 2024-01-01 Last-Modified date.
 The exact redistributed copies are pinned by SHA-256 below, not fetched at runtime.
 Run `npm run models:prepare` before building from source. The build helper downloads
-from the official URLs above and verifies both byte count and SHA-256 before
-replacing a cached file. Model binaries are ignored by Git and embedded in the
-Windows executable at compile time.
+from the project's unchanged mirror and verifies both byte count and SHA-256
+before replacing a cached file. The original host returned HTTP 403 on 2026-10-28;
+the mirror preserves the exact copies retrieved and verified on 2026-10-26:
+https://github.com/cpython666/starshot/releases/tag/ocr-models-v1
+Model binaries are ignored by Git and embedded in the Windows executable at
+compile time. This build-dependency release is not an application update.
 
 The author explicitly identifies the model license as **Creative Commons
 Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)** in:

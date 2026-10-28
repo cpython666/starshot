@@ -29,7 +29,7 @@ for (const model of models) {
     await promisify(execFile)(process.platform === 'win32' ? 'curl.exe' : 'curl', [
       '--fail', '--location', '--retry', '2', '--connect-timeout', '20', '--max-time', '300',
       '--proto', '=https', '--proto-redir', '=https', '--max-filesize', String(model.bytes),
-      '--output', temporary, `https://ocrs-models.s3-accelerate.amazonaws.com/${model.name}`,
+      '--output', temporary, `https://github.com/cpython666/starshot/releases/download/ocr-models-v1/${model.name}`,
     ], { timeout: 960000, maxBuffer: 1024 * 1024 });
     if (!await matches(temporary, model)) throw Error(`${model.name}: size or SHA-256 mismatch; refusing this model.`);
     await rename(temporary, destination);
