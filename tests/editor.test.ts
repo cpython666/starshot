@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { calculateLayout, DEFAULT_STYLE, renderImage, sanitizeStyle, validateImageSize, type Annotation } from '../src/editor.ts';
+import { calculateLayout, DEFAULT_STYLE, renderImage, renderPreview, sanitizeStyle, validateImageSize, type Annotation } from '../src/editor.ts';
 
 test('crop stays in original coordinates while the output centers it inside padding', () => {
   const layout = calculateLayout({ width: 1200, height: 800 }, { ...DEFAULT_STYLE, padding: 40 }, { x: 100, y: 200, width: 400, height: 300 });
@@ -71,6 +71,41 @@ test('redaction rendering stays opaque and above later stickers, including cropp
     assert.deepEqual(canvases[1]!.events.find(event => event.operation === 'scale')?.args, [2, 2]);
     assert.deepEqual(canvases[1]!.events.filter(event => event.operation === 'fillRect').at(-1), { operation: 'fillRect', args: [4, 4, 12, 10], color: '#000000', alpha: 1 });
     assert.throws(() => renderImage(source, { width: 20, height: 20 }, [annotations[1]!], { ...DEFAULT_STYLE, shadow: 0 }), /尚未解码/);
+  } finally {
+    if (originalDocument) globalThis.document = originalDocument;
+    else Reflect.deleteProperty(globalThis, 'document');
+  }
+});
+
+
+test('display preview bounds every raster allocation while export retains full dimensions and source coordinates', () => {
+  const originalDocument = globalThis.document;
+  const allocated: { width: number; height: number }[] = [];
+  const events: { operation: string; args: unknown[] }[] = [];
+  globalThis.document = { createElement() {
+    const ctx = new Proxy({}, { get: (_target, key) => (...args: unknown[]) => { events.push({ operation: String(key), args }); } });
+    const canvas = { width: 0, height: 0, getContext: () => ctx };
+    allocated.push(canvas); return canvas;
+  } } as unknown as Document;
+  try {
+    const source = { width: 6000, height: 4000 } as CanvasImageSource;
+    const style = { ...DEFAULT_STYLE, background: 'transparent' as const, padding: 0, radius: 0, shadow: 0, borderWidth: 0 };
+    const annotation: Annotation = { id: 'original-coordinate', type: 'rect', x: 1200, y: 800, width: 600, height: 400, color: '#ff0000', lineWidth: 6 };
+    const preview = renderPreview(source, { width: 6000, height: 4000 }, [annotation], style, {}, { width: 1200, height: 800 });
+    assert.deepEqual([preview.width, preview.height], [1200, 800]);
+    assert.ok(allocated.every(c => c.width * c.height <= 960_000));
+    assert.ok(events.some(e => e.operation === 'strokeRect' && String(e.args) === '1200,800,600,400'));
+    assert.ok(events.some(e => e.operation === 'scale' && String(e.args) === '0.2,0.2'));
+    const largePreview = renderPreview(source, { width: 6000, height: 4000 }, [], style, {}, { width: 20_000, height: 20_000 });
+    assert.ok(largePreview.width * largePreview.height <= 4_000_000);
+    const exported = renderImage(source, { width: 6000, height: 4000 }, [annotation], style);
+    assert.deepEqual([exported.width, exported.height], [6000, 4000]);
+    assert.deepEqual(annotation, { id: 'original-coordinate', type: 'rect', x: 1200, y: 800, width: 600, height: 400, color: '#ff0000', lineWidth: 6 });
+    for (const viewport of [{ width: 0, height: 1 }, { width: NaN, height: 1 }, { width: 1, height: Infinity }]) {
+      const count = allocated.length;
+      assert.throws(() => renderPreview(source, { width: 6000, height: 4000 }, [], style, {}, viewport), /预览区域/);
+      assert.equal(allocated.length, count);
+    }
   } finally {
     if (originalDocument) globalThis.document = originalDocument;
     else Reflect.deleteProperty(globalThis, 'document');

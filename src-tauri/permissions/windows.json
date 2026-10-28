@@ -39,7 +39,7 @@
     },
     {
       "identifier": "capture-commands",
-      "description": "A capture overlay can read only its own frozen frame and complete or cancel that capture",
+      "description": "A capture overlay can read only its own frozen frame, explicitly edit/copy/save/pin its selection, or cancel that capture",
       "commands": {
         "allow": [
           "get_capture_frame",

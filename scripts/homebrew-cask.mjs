@@ -33,10 +33,6 @@ export async function generateHomebrewCask({ dmgPath, outputPath, version, tag =
   desc "Local-first screenshot, annotation and image pinning tool"
   homepage "https://github.com/cpython666/starshot"
 
-  livecheck do
-    skip "Development previews are updated manually"
-  end
-
   auto_updates true
   depends_on arch: :arm64
   depends_on macos: :monterey
@@ -44,7 +40,7 @@ export async function generateHomebrewCask({ dmgPath, outputPath, version, tag =
   app "Starshot.app"
 
   caveats <<~EOS
-    This is the ${version} development preview for Apple Silicon Macs.
+    This is Starshot ${version} for Apple Silicon Macs.
     It is not Apple-notarized; macOS may block the first launch.
     See the release notes before installing: https://github.com/cpython666/starshot/releases/tag/${tag}
   EOS

@@ -30,48 +30,96 @@ export function chooseRegion(point: Point, regions: Region[], size: Size): Regio
   return chosen;
 }
 
-/** Local edge heuristic, not accessibility or semantic UI-element recognition. */
-export function detectRegions(data: Uint8ClampedArray, width: number, height: number): Region[] {
-  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 4 || height < 4 || width * height > 40_000_000 || data.length !== width * height * 4) return [];
-  // ponytail: bounded sampled edges find rectangular panels; OS window bounds remain the primary prediction source.
-  const step = Math.max(1, Math.ceil(Math.max(width, height) / 480));
-  const cols = Math.floor(width / step), rows = Math.floor(height / step);
-  const contrast = (x: number, y: number, dx: number, dy: number) => {
-    const a = ((y * step) * width + x * step) * 4;
-    const b = (((y + dy) * step) * width + (x + dx) * step) * 4;
-    return Math.abs(data[a]! - data[b]!) + Math.abs(data[a + 1]! - data[b + 1]!) + Math.abs(data[a + 2]! - data[b + 2]!) > 90;
+/** Windows are ordered front-to-back by xcap; edge candidates are sorted by area once. */
+export function captureRegionsAt(point: Point, windows: Region[], edges: Region[], size: Size): Region[] {
+  if (![point.x, point.y, size.width, size.height].every(Number.isFinite) || point.x < 0 || point.y < 0 || point.x >= size.width || point.y >= size.height) return [];
+  const contains = (r: Rect) => point.x >= r.x && point.y >= r.y && point.x < r.x + r.width && point.y < r.y + r.height;
+  const front = windows.find(contains);
+  const choices = edges.filter(r => contains(r) && (!front || r.x >= front.x - 2 && r.y >= front.y - 2 && r.x + r.width <= front.x + front.width + 2 && r.y + r.height <= front.y + front.height + 2));
+  const append = (region: Region) => {
+    if (!choices.some(r => Math.abs(r.x - region.x) <= 2 && Math.abs(r.y - region.y) <= 2 && Math.abs(r.width - region.width) <= 2 && Math.abs(r.height - region.height) <= 2)) choices.push(region);
   };
-  const edges: { x: number; y: number; end: number }[] = [];
-  const minimum = Math.max(8, Math.ceil(40 / step));
-  for (let y = 1; y < rows && edges.length < 512; y++) {
-    let start = -1;
-    for (let x = 1; x <= cols; x++) {
-      const edge = x < cols && contrast(x, y, 0, -1);
-      if (edge && start < 0) start = x;
-      if (!edge && start >= 0) {
-        if (x - start >= minimum) edges.push({ x: start, y, end: x });
-        start = -1;
-      }
+  if (front) append(front);
+  append({ x: 0, y: 0, ...size, label: '整个画面' });
+  return choices;
+}
+
+/** Local straight-edge heuristic, not accessibility or semantic UI-element recognition. */
+export function detectRegions(data: Uint8ClampedArray, width: number, height: number): Region[] {
+  // The caller supplies a reduced probe, not the full Retina screenshot. Do not sample it
+  // again: skipping every third pixel used to erase thin borders and quantize every box.
+  const pixels = width * height;
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 4 || height < 4 || pixels > 4_000_000 || data.length !== pixels * 4) return [];
+  const edges = new Uint8Array(pixels);
+  const contrast = (a: number, b: number) => Math.abs(data[a]! - data[b]!) + Math.abs(data[a + 1]! - data[b + 1]!) + Math.abs(data[a + 2]! - data[b + 2]!) >= 24;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const index = y * width + x, offset = index * 4;
+      // Keep orientation: isolated text strokes are not evidence of all four sides.
+      if (y && contrast(offset, offset - width * 4)) edges[index]! |= 1;
+      if (x && contrast(offset, offset - 4)) edges[index]! |= 2;
     }
   }
+
+  const queue = new Uint32Array(pixels);
   const candidates: Region[] = [];
-  for (let i = 0; i < edges.length && candidates.length < 64; i++) {
-    const top = edges[i]!;
-    for (let j = i + 1; j < edges.length; j++) {
-      const bottom = edges[j]!;
-      if (bottom.y - top.y < minimum || Math.abs(top.x - bottom.x) > 2 || Math.abs(top.end - bottom.end) > 2) continue;
-      let sideHits = 0, samples = 0;
-      const stride = Math.max(1, Math.floor((bottom.y - top.y) / 24));
-      for (let y = top.y + 1; y < bottom.y; y += stride) {
-        samples += 2;
-        if (contrast(top.x, y, -1, 0)) sideHits++;
-        if (top.end < cols && contrast(top.end, y, -1, 0)) sideHits++;
-      }
-      if (samples && sideHits / samples >= 0.65) {
-        candidates.push({ x: top.x * step, y: top.y * step, width: (top.end - top.x) * step, height: (bottom.y - top.y) * step, label: '边缘预测区域', kind: 'edge' });
-        break;
+  const sideCoverage = (start: number, end: number, fixed: number, horizontal: boolean) => {
+    const stride = Math.max(1, Math.ceil((end - start) / 96));
+    let hits = 0, samples = 0;
+    for (let at = start; at <= end; at += stride) {
+      samples++;
+      for (let delta = -1; delta <= 1; delta++) {
+        const x = horizontal ? at : fixed + delta, y = horizontal ? fixed + delta : at;
+        if (x >= 0 && x < width && y >= 0 && y < height && (edges[y * width + x]! & (horizontal ? 1 : 2))) { hits++; break; }
       }
     }
+    return hits / Math.max(1, samples);
+  };
+  // Connected outlines preserve rounded corners, nested panels and short broken borders.
+  // The queue and scan are bounded by 4 MP; no all-pairs line search runs on pointermove.
+  for (let seed = 0; seed < pixels; seed++) {
+    if (!edges[seed] || (edges[seed]! & 4)) continue;
+    let read = 0, write = 1;
+    queue[0] = seed; edges[seed]! |= 4;
+    let left = width, top = height, right = 0, bottom = 0;
+    while (read < write) {
+      const index = queue[read++]!, x = index % width, y = Math.floor(index / width);
+      left = Math.min(left, x); right = Math.max(right, x);
+      top = Math.min(top, y); bottom = Math.max(bottom, y);
+      for (let dy = -1; dy <= 1; dy++) {
+        if (y + dy < 0 || y + dy >= height) continue;
+        for (let dx = -1; dx <= 1; dx++) {
+          if ((!dx && !dy) || x + dx < 0 || x + dx >= width) continue;
+          const adjacent = index + dy * width + dx;
+          if (edges[adjacent] && !(edges[adjacent]! & 4)) {
+            edges[adjacent]! |= 4; queue[write++] = adjacent;
+          }
+        }
+      }
+    }
+    const w = right - left, h = bottom - top;
+    if (w < 24 || h < 18 || w * h < 640 || w > h * 40 || h > w * 20 || write < (w + h)) continue;
+    // A connected photograph/texture is not a rectangular outline.
+    if (write > w * h * 0.35 + (w + h) * 2) continue;
+    // Ignore corner arcs when checking straight support, but retain their outer bounds.
+    const inset = Math.min(18, Math.max(2, Math.floor(Math.min(w, h) * 0.18)));
+    const coverage = [
+      sideCoverage(left + inset, right - inset, top, true),
+      sideCoverage(left + inset, right - inset, bottom, true),
+      sideCoverage(top + inset, bottom - inset, left, false),
+      sideCoverage(top + inset, bottom - inset, right, false),
+    ].sort((a, b) => a - b);
+    if (!(coverage[0]! >= 0.5 && coverage[1]! >= 0.75 && coverage[2]! >= 0.8 && coverage[3]! >= 0.8)) continue;
+    candidates.push({ x: left, y: top, width: w, height: h, label: '边缘预测区域', kind: 'edge' });
   }
-  return candidates;
+  // Stroke outlines may produce an inner and outer loop. Preserve the outer pixels,
+  // without merging genuinely nested cards or controls separated by more than 4 px.
+  candidates.sort((a, b) => b.width * b.height - a.width * a.height);
+  const unique: Region[] = [];
+  for (const candidate of candidates) {
+    if (unique.some(other => Math.abs(candidate.x - other.x) <= 4 && Math.abs(candidate.y - other.y) <= 4 && Math.abs(candidate.x + candidate.width - other.x - other.width) <= 4 && Math.abs(candidate.y + candidate.height - other.y - other.height) <= 4)) continue;
+    unique.push(candidate);
+    if (unique.length === 256) break;
+  }
+  return unique;
 }

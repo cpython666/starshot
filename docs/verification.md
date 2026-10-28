@@ -149,3 +149,30 @@ Homebrew Tap的公开提交为[0b2d188](https://github.com/cpython666/homebrew-t
 Homebrew真实安装到仓库忽略的隔离目录；brew info的安装版本、应用Info.plist和codesign严格校验通过，卸载后应用及Cask安装登记均不存在。未启动该发行应用或替换已有应用。首轮安装验证器误用只适用于formulae的 `brew list --versions`，后来使用 `brew info --cask --json=v2`完整重跑并记录成功；使用 `HOMEBREW_NO_INSTALL_CLEANUP=1`避免后续安装清理缓存。结果在 `artifacts/release-0.3.0/brew-install-verification.json`。安装说明与边界见[Homebrew指南](homebrew.md)。
 
 仍未完整验收：旧版真实更新安装及失败恢复、原生GUI的OCR→应用遮盖→备份退出全链路、混合DPI/多显示器、系统权限、全局热键、开机启动和平台信任提示。浏览器、单元、真实worker与隔离安装各自覆盖不同层级，不能合并表述为完整原生使用已通过；本轮交付为开发预览。
+
+## 2026-10-27 · 轻量截图改进（0.3.0之后，未发布工作区）
+
+根据用户提供的竞品视频核对交互，改为选区底部工具条，按需进入更多编辑；明确星镜不做星伴。参考视频只用于观察流程，没有作为测试像素或加入Git。以下检查针对本次本地源码，不能用上文0.3.0发行CI代替。
+
+- Node 52项：51通过、1项真实minisign测试因普通PATH缺工具而跳过；Vue/TypeScript/Vite生产构建通过。Rust core18通过，desktop33通过、1项离线模型手动测试忽略，cargo check和fmt检查通过。新增原生测试覆盖操作枚举、标注PNG实际格式/精确裁切尺寸，窗口ACL检查使用新的捕获标签格式。
+- 浏览器截图回归7组通过：真实Worker从原创示例识别560×320圆角卡片；Tab正反切换候选并保留点击选择；就地文字/箭头/实心遮盖、撤销/重做、零面积草稿和真实PNG下载；只在更多编辑后进入主页面；模拟IPC保存取消/复制失败保留选区和标注；忙碌状态阻止重复操作；Enter复制及未标注操作不回传图片。200次同帧pointermove只产生1次小画布取色。模拟IPC没有调用系统截图或剪贴板。
+- 原有功能浏览器回归8组重新通过，包含对象/贴纸/预算、偏好、宣传图与真实导出像素。新增预览回归检查100×70预览的150个遮盖像素均为不透明黑色，1×/2×导出仍为200×140/400×280，并保持遮盖像素；预览不替代导出精度。
+- Chromium固定4K原创图、20个箭头、1280×800显示区域，预热后交替测量7次：单次完整渲染中位数10.1ms，按显示尺寸渲染2.8ms；该次临时canvas分配像素总数由26,652,672降至2,748,869（约减少89.7%）。这不是整机内存、原生帧率或截图启动耗时。
+- 矩形算法使用连续方向边缘与四边支撑，并移到Worker。固定1920×1080细框图旧算法候选0、新算法201，新算法中位21.53ms；密集棋盘噪声中位50.23ms且候选0。新算法改善薄边识别，计算本身并未更快；不会在每次鼠标移动重算。系统窗口保持前后顺序，遮挡窗口命中和跨窗口边缘过滤已有单元覆盖。
+- 可复用脚本为tests/browser-capture-regression.mjs与tests/browser-preview-regression.mjs。日志、原创截图、下载与性能记录仅在忽略的artifacts/capture-toolbar、preview-performance、region-detection和capture-final-*.log；没有真实屏幕或剪贴内容进入Git。
+- 最终macOS arm64 app/DMG构建成功，独立名称Starshot Capture Preview、标识com.starshot.capture-preview，沿用源码版本0.3.0，仅供本地验收，不是新的发行版本。DMG 4,977,110字节，SHA-256 `a67374b4378f7d1591c923726186ff2a29418b90eb9242bb6824b81fbdabbaab`；codesign严格校验通过，仍为ad-hoc、未公证。产物位于src-tauri/target/release/bundle，未安装或替换现有应用。
+- 已运行这个独立应用，在tauri://localhost的打包WebView打开「体验区域选择（原创示例）」：真实Worker识别560×320卡片，点击出现就地工具条，Esc回到空白编辑器，随后退出测试应用。原创例图的原生工具条截图在artifacts/capture-toolbar/macos-original-demo.png。这验证了打包后的Worker和工具条，不涉及系统捕获、剪贴板或真实图片。
+
+仍待验收：本轮Windows平台构建与原生运行；真实截图的启动耗时、系统复制/保存/贴图完整链路、多屏和混合DPI。表格相连格线、严重缺边和极低对比可能漏检，窗口边界/像素启发式不等同于系统控件语义识别。本轮没有提交、推送、发布或更新Homebrew，公开0.3.0包不包含这些修改。
+
+## 2026-10-28 · 更新源排查与0.3.1待发布准备
+
+用户反馈检查更新后仍是旧交互。只读GitHub API核对公开列表只有v0.3.0，draft=false、prerelease=true；固定tag的latest.json返回HTTP200且version=0.3.0。客户端内置的`releases/latest/download/latest.json`和GitHub latest API均返回HTTP404，尚无稳定更新入口。新交互仍在本地工作区，未进入公开0.3.0包，不能由旧包的检查更新获得。
+
+本机运行的应用经进程路径与Info.plist核对为Starshot Verify 0.3.0（com.starshot.verify-030）。只读取原生设置页，实际状态为「暂时无法检查更新……Could not fetch a valid release JSON from the remote」。已核对所用Tauri updater源码：HTTP404最终返回ReleaseNotFound，当前代码进入error，不是up-to-date；因此没有为假想的错误状态转换增加补丁。查看后返回原编辑页，未截图、读取剪贴板、替换应用或关闭现有会话。
+
+使用scripts/version.mjs将六处版本同步为0.3.1，轻量截图变更整理到对应CHANGELOG条目，仍标待发布。本机重新运行Node52项（51通过、1项minisign跳过）、前端生产构建、Rust core18项、desktop33项（另1项手动测试忽略）、cargo check与fmt检查均通过。发布说明提取为3条实际改动，没有将待发布状态混入发行说明。检查日志为忽略的artifacts/release-031-*.log。
+
+0.3.1本地macOS app/DMG构建成功，使用官方应用标识com.starshot.desktop；核对版本0.3.1、arm64和codesign严格检查通过，仍为ad-hoc、未公证。DMG位于src-tauri/target/release/bundle/dmg/Starshot_0.3.1_aarch64.dmg，4,981,929字节，SHA-256 `edf8e41c8ceabd26b3407153527c941548e35e37d7b4e229ea772b8c45130d58`。这是本地普通安装包，没有安装/启动或用于更新现有验收应用；最终远端签名发行包需另行核验。
+
+本轮没有提交、推送、创建标签或公开发行。0.3.1双平台CI、签名发行包和公开更新源验证仍待后续发布流程；前一轮0.3.0的CI不能作为本轮构建证据。

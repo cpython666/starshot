@@ -175,13 +175,13 @@ function drawAnnotation(ctx: CanvasRenderingContext2D, annotation: Annotation, s
   ctx.restore();
 }
 
-function pixelate(target: HTMLCanvasElement, annotation: Annotation, crop: Rect): void {
-  const selection = clampRect({ x: annotation.x - crop.x, y: annotation.y - crop.y, width: annotation.width, height: annotation.height }, target);
+function pixelate(target: HTMLCanvasElement, annotation: Annotation, crop: Rect, scale = 1): void {
+  const selection = clampRect({ x: (annotation.x - crop.x) * scale, y: (annotation.y - crop.y) * scale, width: annotation.width * scale, height: annotation.height * scale }, target);
   const x = Math.floor(selection.x), y = Math.floor(selection.y);
   const width = Math.min(target.width - x, Math.ceil(selection.x + selection.width) - x);
   const height = Math.min(target.height - y, Math.ceil(selection.y + selection.height) - y);
   if (width < 1 || height < 1) return;
-  const block = Math.max(8, Math.round(bounded(annotation.lineWidth, 1, 80, 4) * 3));
+  const block = Math.max(1, Math.max(8, Math.round(bounded(annotation.lineWidth, 1, 80, 4) * 3)) * scale);
   const small = canvas(Math.max(1, Math.ceil(width / block)), Math.max(1, Math.ceil(height / block)));
   const smallCtx = context(small);
   smallCtx.drawImage(target, x, y, width, height, 0, 0, small.width, small.height);
@@ -202,30 +202,45 @@ function sourceSize(source: CanvasImageSource): Size {
 }
 
 export function renderImage(source: CanvasImageSource, size: Size, annotations: Annotation[], rawStyle: EditorStyle, options: RenderOptions = {}): HTMLCanvasElement {
+  return render(source, size, annotations, rawStyle, options, 1);
+}
+
+/** Display-only raster budget. All editing coordinates and exports stay in source pixels. */
+export function renderPreview(source: CanvasImageSource, size: Size, annotations: Annotation[], rawStyle: EditorStyle, options: Omit<RenderOptions, 'scale'>, viewport: Size): HTMLCanvasElement {
+  if (![viewport.width, viewport.height].every(value => Number.isFinite(value) && value > 0)) throw new Error('预览区域尺寸无效');
+  const layout = calculateLayout(size, rawStyle, options.crop);
+  // ponytail: a 4 MP preview bounds drag-time allocation; export still uses the full source.
+  const scale = Math.min(1, viewport.width / layout.width, viewport.height / layout.height, Math.sqrt(4_000_000 / (layout.width * layout.height)));
+  return render(source, size, annotations, rawStyle, { ...options, scale: 1 }, scale);
+}
+
+function render(source: CanvasImageSource, size: Size, annotations: Annotation[], rawStyle: EditorStyle, options: RenderOptions, rasterScale: number): HTMLCanvasElement {
   const style = sanitizeStyle(rawStyle);
   const layout = calculateLayout(size, style, options.crop, options.scale ?? 1);
   if (annotations.length > 1_000) throw new Error('单张图片最多支持 1000 个标注');
   const crop = layout.crop;
-  const picture = canvas(crop.width, crop.height);
+  const picture = canvas(Math.max(1, Math.floor(crop.width * rasterScale)), Math.max(1, Math.floor(crop.height * rasterScale)));
   const pictureCtx = context(picture);
-  pictureCtx.drawImage(source, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height);
+  pictureCtx.drawImage(source, crop.x, crop.y, crop.width, crop.height, 0, 0, picture.width, picture.height);
+  const pictureScaleX = picture.width / crop.width, pictureScaleY = picture.height / crop.height;
   for (const annotation of annotations) {
     if (annotation.type === 'redact') continue;
-    if (annotation.type === 'mosaic') { pixelate(picture, annotation, crop); continue; }
-    pictureCtx.save(); pictureCtx.translate(-crop.x, -crop.y);
+    if (annotation.type === 'mosaic') { pixelate(picture, annotation, crop, rasterScale); continue; }
+    pictureCtx.save(); pictureCtx.scale(pictureScaleX, pictureScaleY); pictureCtx.translate(-crop.x, -crop.y);
     drawAnnotation(pictureCtx, annotation, options.stickers);
     pictureCtx.restore();
   }
   // Keep solid privacy masks above later stickers, highlights and mosaics.
   for (const annotation of annotations) {
     if (annotation.type !== 'redact') continue;
-    pictureCtx.save(); pictureCtx.translate(-crop.x, -crop.y);
+    pictureCtx.save(); pictureCtx.scale(pictureScaleX, pictureScaleY); pictureCtx.translate(-crop.x, -crop.y);
     drawAnnotation(pictureCtx, annotation);
     pictureCtx.restore();
   }
-  const output = canvas(layout.width, layout.height);
+  const output = canvas(Math.max(1, Math.floor(layout.width * rasterScale)), Math.max(1, Math.floor(layout.height * rasterScale)));
   const ctx = context(output);
-  ctx.scale(layout.scale, layout.scale);
+  const outputScaleX = output.width / (layout.width / layout.scale), outputScaleY = output.height / (layout.height / layout.scale);
+  ctx.scale(outputScaleX, outputScaleY);
   const width = layout.width / layout.scale, height = layout.height / layout.scale;
   if (options.format === 'jpeg') { ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, width, height); }
   if (style.background === 'solid') { ctx.fillStyle = style.backgroundColor; ctx.fillRect(0, 0, width, height); }
@@ -246,26 +261,26 @@ export function renderImage(source: CanvasImageSource, size: Size, annotations: 
   }
   const imageRect = layout.imageRect;
   if (style.shadow > 0) {
-    const shadow = canvas(layout.width, layout.height), shadowCtx = context(shadow);
-    shadowCtx.scale(layout.scale, layout.scale);
-    shadowCtx.shadowColor = '#090c3266'; shadowCtx.shadowBlur = style.shadow * layout.scale;
-    shadowCtx.shadowOffsetY = style.shadow * layout.scale / 3;
+    const shadow = canvas(output.width, output.height), shadowCtx = context(shadow);
+    shadowCtx.scale(outputScaleX, outputScaleY);
+    shadowCtx.shadowColor = '#090c3266'; shadowCtx.shadowBlur = style.shadow * outputScaleX;
+    shadowCtx.shadowOffsetY = style.shadow * outputScaleY / 3;
     shadowCtx.fillStyle = '#151829'; roundedPath(shadowCtx, imageRect, style.radius); shadowCtx.fill();
     shadowCtx.shadowColor = 'transparent'; shadowCtx.globalCompositeOperation = 'destination-out';
     roundedPath(shadowCtx, imageRect, style.radius); shadowCtx.fill();
     ctx.drawImage(shadow, 0, 0, width, height);
   }
   ctx.save(); roundedPath(ctx, imageRect, style.radius); ctx.clip();
-  ctx.drawImage(picture, imageRect.x, imageRect.y);
+  ctx.drawImage(picture, imageRect.x, imageRect.y, imageRect.width, imageRect.height);
   // Resampling at 2× can blend a masked edge with adjacent colored pixels.
   // Repaint in output pixel space, while retaining the image's rounded clip.
-  ctx.scale(1 / layout.scale, 1 / layout.scale);
+  ctx.scale(1 / outputScaleX, 1 / outputScaleY);
   for (const annotation of annotations) {
     if (annotation.type !== 'redact') continue;
-    const left = Math.floor((imageRect.x + Math.floor(annotation.x) - crop.x) * layout.scale);
-    const top = Math.floor((imageRect.y + Math.floor(annotation.y) - crop.y) * layout.scale);
-    const right = Math.ceil((imageRect.x + Math.ceil(annotation.x + annotation.width) - crop.x) * layout.scale);
-    const bottom = Math.ceil((imageRect.y + Math.ceil(annotation.y + annotation.height) - crop.y) * layout.scale);
+    const left = Math.floor((imageRect.x + Math.floor(annotation.x) - crop.x) * outputScaleX);
+    const top = Math.floor((imageRect.y + Math.floor(annotation.y) - crop.y) * outputScaleY);
+    const right = Math.ceil((imageRect.x + Math.ceil(annotation.x + annotation.width) - crop.x) * outputScaleX);
+    const bottom = Math.ceil((imageRect.y + Math.ceil(annotation.y + annotation.height) - crop.y) * outputScaleY);
     ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.fillStyle = '#000000';
     ctx.fillRect(left, top, right - left, bottom - top);
   }

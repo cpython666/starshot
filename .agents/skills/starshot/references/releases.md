@@ -2,7 +2,7 @@
 
 用户于2026-10-26明确要求迁入星笺的更新与版本机制、关联远端，并确认公开仓库提供更新下载。仓库为 https://github.com/cpython666/starshot。详细操作和验收边界在 docs/releases.md / docs/verification.md。
 
-- 版本由 scripts/version.mjs 校验/递增，同步 npm/Cargo/Tauri 六个版本字段；标签必须 vX.Y.Z。当前版本0.3.0，已公开为开发预览；0.2.2引入下载后安装确认，旧0.1.0无updater，须手动升级。
+- 版本由 scripts/version.mjs 校验/递增，同步 npm/Cargo/Tauri 六个版本字段；标签必须 vX.Y.Z。工作区源码准备为0.3.1（未发布），公开版本仍为0.3.0开发预览；0.2.2引入下载后安装确认，旧0.1.0无updater，须手动升级。
 - src-tauri/src/updater.rs 与 desktop.rs 使用官方 Tauri updater，限制本仓库下载地址，要求更新签名绑定版本。检查和下载均手动触发，无启动联网。0.2.2 的 download_starshot_update 只下载验签，成功才缓存字节并进入 ready/downloadReady，再唤起主窗口显示「安装并重启」；下载阶段不保存会话、不安装、不重启。
 - 选择「稍后安装」可继续编辑；已验签包只保留本次运行，重查或退出清空。install_starshot_update 只消费同一候选版本的缓存，点击安装时获取最新会话，先保存恢复点和旧应用副本，再安装并自动重启；备份失败保留编辑与缓存以供重试。macOS调用app.restart，Windows显式restart_after_install(true)。
 - 更新/recovery IPC 仅主窗口；捕获、贴图窗口不授予 updater 插件直通权限。忙时后端拒绝图像操作；Windows on_before_exit 先释放单实例锁再 cleanup。清理后安装器启动失败必须使用预缓存Env做进程级重启，不能再用AppHandle状态或事件，否则应用可能隐藏且无托盘。基于当前Tauri/插件源码核对与编译，此失败路径仍待Windows实机验收。
@@ -24,6 +24,13 @@
 - 2026-10-26 17:23:11 UTC公开为prerelease；固定tag下载可用，不成为稳定updater的latest。Homebrew Tap提交0b2d188已公开，真实最终DMG的下载、隔离安装、版本/签名核对与卸载通过。online audit仅拒绝GitHub prerelease政策，不宣称audit全绿。哈希与具体证据统一见docs/verification.md和docs/homebrew.md。
 - Windows模型构建前由scripts/prepare-ocr-models.mjs从固定官方来源下载并校验大小/哈希；二进制模型Git忽略，Windows程序编译嵌入，无运行时下载。两模型共12,226,852字节；macOS使用系统Vision。
 - 0.3.0已补跑0.2.2最终确认门控的7组浏览器回归；这仍是模拟IPC。旧版真实升级/恢复、完整原生GUI、多显示器/混合DPI、权限/全局热键/开机启动矩阵和平台发行证书仍未全部验收。预览发行不能作为正式稳定版验收记录。
+
+## 0.3.1准备与更新源核对（2026-10-28）
+
+- 用户反馈检查更新后交互仍旧。只读核对发现公开列表仅有0.3.0 prerelease，固定tag的latest.json返回200、版本0.3.0；客户端配置的releases/latest/download/latest.json与GitHub latest API均返回404。未发布工作区不能通过更新检查安装，且相同版本号也不会触发升级。
+- 本机运行的是Starshot Verify 0.3.0独立验收包（com.starshot.verify-030），不是前一轮Capture Preview。原生设置页实际显示无法读取更新清单；Tauri updater对该404返回ReleaseNotFound，不是up-to-date。没有改写更新逻辑或降级签名校验。
+- 已将六处源码版本递增为0.3.1，并整理轻量截图变更说明，仍未提交/推送/公开。下一步需完成授权后的双平台构建与发行验证，再让新Release成为稳定latest并同步Homebrew；仅将旧0.3.0改成稳定版无法获得本轮新交互。
+- 独立验收包使用不同应用标识与数据目录；切换官方标识时需保留旧会话恢复点，不能假定数据目录自动迁移。用户正在编辑的旧应用不应为测试强制退出。
 
 ## 历史验证（仅适用0.2.2）
 

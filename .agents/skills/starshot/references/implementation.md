@@ -8,8 +8,8 @@
 | `src/editor.ts` | 预览和PNG/JPEG共用Canvas管线；标注原图坐标，裁剪只改变可见窗口；马赛克实际替换像素 |
 | `src/{privacy.ts,objects.ts,preferences.ts,share.ts}` | 本地敏感规则、对象/贴纸预算、非图片偏好与原创宣传图；OCR原文不存入候选状态 |
 | `src-tauri/src/{ocr.rs,ocr/,desktop_settings.rs}` | macOS Vision / Windows离线子进程识别；快捷键与开机启动事务保存 |
-| `src/geometry.ts` | 选区夹取、候选命中、受限矩形边缘启发式；并非系统控件树 |
-| `src/components/CaptureOverlay.vue` | 原生冻结图/明确demo分支，选择、8向调整、键盘微调、放大镜与颜色读数 |
+| `src/geometry.ts` | 选区夹取、候选命中、连续方向边缘/四边支撑启发式；`capture-regions.worker.ts`一次分析受限探测图，并非系统控件树 |
+| `src/components/CaptureOverlay.vue` | 原生冻结图/明确demo分支，选择、8向调整、键盘微调、放大镜、就地标注/撤销及copy/save/pin/edit路由 |
 | `src/components/PinWindow.vue` | 原生贴图拖动、缩放队列、旋转翻转、透明度、工具条显隐 |
 | `src-tauri/src/desktop.rs` | xcap捕获、窗口候选、多显示器覆盖层、快捷键、托盘、复制/保存/贴图和IPC |
 | `src-tauri/src/imaging.rs` | 图片解码/上限、裁切参数、坐标转换、同目录临时文件原子替换 |
@@ -28,6 +28,15 @@
 - macOS系统占用Cmd+Shift+3；贴原图使用 `CommandOrControl+Alt+3`，开始截图 `CommandOrControl+Shift+2`。实际冲突通过UI报错，不使启动失败。
 - 新图最近会话最多6张、原图合计48MP；最多60个撤销步骤。预算不包含背景/临时渲染/快照，不代表进程硬内存上限。贴图最多12张。
 - 用户反馈菜单栏原图标难辨认（2026-10-26）。托盘不再复用带底板的应用图标：`public/tray-template.svg`生成36px黑色透明模板，macOS启用icon_as_template；`public/tray-contrast.svg`生成32px紫色/白边图标供Windows。源码接入desktop.rs，已有image依赖负责解码，无新增依赖。生成命令为 `npm run tauri -- icon public/tray-template.svg --output src-tauri/icons/tray-template --png 36`，另一份替换为tray-contrast和32。此修复自0.2.1引入；系统实机效果与设计预览分开记录。
+
+## 轻量截图改进（0.3.0之后的未发布源码）
+
+- `finish_capture`接受可选action（edit/copy/save/pin，缺省edit兼容旧调用）及仅标注时传入的PNG；原生核对活跃窗口、矩形、实际PNG格式和精确裁切尺寸。保存取消返回completed=false保留选区；失败不关闭。quick成功更新current/已有main会话但不创建或唤起main，edit才唤起。
+- 每次捕获窗口使用唯一`capture-{id}-{index}`，旧请求/关闭事件不得影响后续捕获；取消只恢复捕获前原本可见的主窗。主窗原本隐藏时不等待180ms移除动画。保存/贴图使用已持有operation锁的内部helper，不能重入外层加锁命令。
+- 原生未标注选区直接裁切RGBA用于copy/save，仍编码一份PNG供最近图片和已有主窗状态；不能声称完全没有PNG编码。前端仅显示图片，不为放大镜再常驻完整CPU截图canvas；小画布每帧最多一次读色，隐藏时不读。
+- 区域候选Worker在界面可交互后分析一次，探测图长边1920、算法硬上限4MP，最多256边缘候选；不再二次480跳采样。四边支撑拒绝文字/单线/密集纹理，圆角与短断边可保留；表格相连格线、严重缺边/极低对比仍可能漏检。演示卡片候选也走真实算法。
+- 系统窗口保留xcap返回的前后顺序，指针处只采用最前窗口及其内部像素边缘候选，避免后台小窗抢选；全屏作为末级候选。Tab按矩形坐标匹配当前候选（不能用Vue代理对象的indexOf），同位置点击/抬起保留键盘选择，真实移动后重新命中。
+- `renderPreview`复用同一标注管线但按显示尺寸/DPR（最多2）限制4MP；坐标和导出`renderImage`保持原图像素，遮盖仍最后重绘不透明边缘。预览不能作为导出分辨率。
 
 ## 回归方式
 

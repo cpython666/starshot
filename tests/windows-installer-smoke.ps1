@@ -1,7 +1,8 @@
 #requires -Version 7.0
 <#
 Run only on an ephemeral GitHub Windows runner, after building the final NSIS:
-  ./tests/windows-installer-smoke.ps1 -InstallerPath ./path/Starshot_0.3.0_x64-setup.exe
+  ./tests/windows-installer-smoke.ps1 -InstallerPath ./path/Starshot_0.3.1_x64-setup.exe
+  ./tests/windows-installer-smoke.ps1 -InstallerPath ./path/Starshot_0.3.1_x64-setup.exe -PreviousInstallerPath ./path/Starshot_0.3.0_x64-setup.exe
 
 No GUI, screenshots, clipboard access, or user data are used. OCR uses the existing
 original fixed-pixel fixture. Evidence stays in artifacts/, including on failure.
@@ -10,6 +11,8 @@ Verified against @tauri-apps/cli 2.12.4 (review these contracts on CLI upgrades)
 https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.12.4/crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi
 https://nsis.sourceforge.io/Docs/Chapter3.html#installerusage
 /S is silent; /NS skips shortcuts; omitting /R prevents Tauri's silent auto-launch.
+With a previous installer, the candidate uses /UPDATE like Tauri's updater;
+this validates the NSIS upgrade payload, not the app's download/restart UI.
 /D= and _?= must be the final, unquoted absolute-path arguments, even with spaces.
 _?= keeps the uninstaller in place so we can wait; we remove its own remaining
 file after success, as in NSIS's documented example. Silent Tauri uninstall keeps
@@ -19,6 +22,7 @@ by this run. This is not a test of interactive uninstall's delete-user-data opti
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$InstallerPath,
+    [string]$PreviousInstallerPath,
     [string]$EvidenceDirectory = (Join-Path $PSScriptRoot '../artifacts/windows-installer-smoke')
 )
 
@@ -137,6 +141,15 @@ try {
     $runKey = 'Software\Microsoft\Windows\CurrentVersion\Run'
     $installer = (Resolve-Path -LiteralPath $InstallerPath).Path
     Assert-Check ((Get-Item -LiteralPath $installer).Name -like '*-setup.exe') 'Supply the final NSIS *-setup.exe.'
+    $previousInstaller = $null
+    if ($PreviousInstallerPath) {
+        $previousInstaller = (Resolve-Path -LiteralPath $PreviousInstallerPath).Path
+        $previousName = (Get-Item -LiteralPath $previousInstaller).Name
+        Assert-Check ($previousName -match '^Starshot_(\d+\.\d+\.\d+)_x64-setup\.exe$') 'Previous installer must use the published Starshot_<version>_x64-setup.exe name.'
+        $previousVersion = $Matches[1]
+        Assert-Check ([version]$previousVersion -lt [version]$version) 'Previous installer version must be older than the candidate.'
+        $report.previousInstaller = @{ path = $previousInstaller; version = $previousVersion; sha256 = (Get-FileHash -LiteralPath $previousInstaller -Algorithm SHA256).Hash }
+    }
     Assert-Check (-not (Test-Path -LiteralPath $sandbox)) 'Unique temporary directory already exists.'
     Assert-Check (@(Find-RegistryKeys $uninstallKey).Count -eq 0) 'A Starshot uninstall entry already exists; refusing to touch it.'
     # The Tauri migration path can discover an older WiX installation under a
@@ -168,7 +181,37 @@ try {
 
     # This is one raw argument string: /D must remain unquoted and last.
     $arguments = "/S /NS /D=$installDir"
+    if ($previousInstaller) {
+        $installationStarted = $true
+        $report.previousInstallArguments = $arguments
+        $report.previousInstallExitCode = Invoke-Nsis $previousInstaller $arguments
+        $unexpected = @(Stop-IsolatedAppProcesses)
+        $report.previousUnexpectedAppProcesses = $unexpected
+        Assert-Check ($unexpected.Count -eq 0) 'Previous silent installation unexpectedly launched the isolated GUI; it was stopped.'
+        Assert-Check (Test-Path -LiteralPath $appExe -PathType Leaf) 'Previous installed executable is missing.'
+        Assert-Check (Test-Path -LiteralPath $uninstaller -PathType Leaf) 'Previous uninstaller is missing.'
+        $previousFiles = @(Get-ChildItem -LiteralPath $installDir -Recurse -Force)
+        Assert-Check (@($previousFiles | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }).Count -eq 0) 'Previous installed files contain a reparse point.'
+        $previousInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($appExe)
+        Assert-Check ($previousInfo.FileVersion -eq $previousVersion -and $previousInfo.ProductVersion -eq $previousVersion) 'Previous installed version differs from its published filename.'
+        Assert-Check ($previousInfo.CompanyName -ceq $publisher -and $previousInfo.ProductName -ceq 'Starshot') 'Previous installed product/publisher is wrong.'
+        Assert-Check ((Get-PeArchitecture $appExe) -eq 'x64') 'Previous installed executable is not x64.'
+        $report.previousExecutable = @{ version = $previousVersion; sha256 = (Get-FileHash -LiteralPath $appExe -Algorithm SHA256).Hash }
+        $previousEntries = @(Find-RegistryKeys $uninstallKey)
+        $report.previousUninstallEntries = $previousEntries
+        Assert-Check ($previousEntries.Count -gt 0) 'Previous version has no uninstall registration; upgrade would be a fresh install.'
+        foreach ($entry in $previousEntries) {
+            Assert-Check ($entry.hive -eq 'CurrentUser' -and $entry.values['DisplayVersion'] -eq $previousVersion) 'Previous uninstall version or scope is wrong.'
+            Assert-Check ($entry.values['InstallLocation'] -eq "`"$installDir`"" -and $entry.values['UninstallString'] -eq "`"$uninstaller`"") 'Previous installation registration escaped the isolated directory.'
+        }
+        $report.phases.previousInstallMetadata = 'passed'
+        & python (Join-Path $PSScriptRoot 'ocr-worker-smoke.py') $appExe *> (Join-Path $evidence 'previous-ocr-worker.log')
+        Assert-Check ($LASTEXITCODE -eq 0) "Previous installed OCR worker failed ($LASTEXITCODE); see previous-ocr-worker.log."
+        $report.phases.previousInstalledOcrWorker = 'passed'
+        $arguments = "/S /NS /UPDATE /D=$installDir"
+    }
     $report.installArguments = $arguments
+    $report.installMode = if ($previousInstaller) { 'upgrade' } else { 'fresh' }
     $installationStarted = $true
     $report.installExitCode = Invoke-Nsis $installer $arguments
     $unexpected = @(Stop-IsolatedAppProcesses)
@@ -202,6 +245,11 @@ try {
         Assert-Check ($entry.values['MainBinaryName'] -ceq 'starshot.exe') 'Uninstall MainBinaryName is wrong.'
     }
     $report.phases.installMetadata = 'passed'
+    if ($previousInstaller) {
+        $report.upgradedExecutableSha256 = (Get-FileHash -LiteralPath $appExe -Algorithm SHA256).Hash
+        Assert-Check ($report.upgradedExecutableSha256 -ne $report.previousExecutable.sha256) 'Upgrade did not replace the previous executable.'
+        $report.phases.upgradeMetadata = 'passed'
+    }
     & python (Join-Path $PSScriptRoot 'ocr-worker-smoke.py') $appExe *> (Join-Path $evidence 'ocr-worker.log')
     Assert-Check ($LASTEXITCODE -eq 0) "Installed OCR worker failed ($LASTEXITCODE); see ocr-worker.log."
     $report.phases.installedOcrWorker = 'passed'
@@ -265,4 +313,4 @@ try {
 if (-not $report.success) {
     throw "Windows installer smoke failed. Evidence: $evidence. $($errors -join ' | ')"
 }
-Write-Host "Windows isolated NSIS install, metadata, fixed-pixel OCR, and uninstall passed. Evidence: $evidence"
+Write-Host "Windows isolated NSIS $($report.installMode), metadata, fixed-pixel OCR, and uninstall passed. Evidence: $evidence"

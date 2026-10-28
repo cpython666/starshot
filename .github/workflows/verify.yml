@@ -75,13 +75,21 @@ jobs:
       - name: Verify the offline OCR worker with original pixels
         if: runner.os == 'Windows'
         run: python tests/ocr-worker-smoke.py src-tauri/target/${{ matrix.target }}/release/starshot.exe
-      - name: Verify isolated Windows installation and uninstallation
+      - name: Fetch the pinned previous Windows release for upgrade verification
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $previous = Join-Path $env:RUNNER_TEMP 'Starshot_0.3.0_x64-setup.exe'
+          Invoke-WebRequest 'https://github.com/cpython666/starshot/releases/download/v0.3.0/Starshot_0.3.0_x64-setup.exe' -OutFile $previous
+          if ((Get-FileHash $previous -Algorithm SHA256).Hash -ne 'e437c0ac62f125c0947d9b7192a1e9d6c2500bb9d37437a526b8e399df39b0a1') { throw 'Previous release hash mismatch.' }
+          "STARSHOT_PREVIOUS_INSTALLER=$previous" >> $env:GITHUB_ENV
+      - name: Verify isolated Windows upgrade and uninstallation
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $installers = @(Get-ChildItem 'src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe')
           if ($installers.Count -ne 1) { throw 'Expected exactly one final NSIS installer.' }
-          ./tests/windows-installer-smoke.ps1 -InstallerPath $installers[0].FullName
+          ./tests/windows-installer-smoke.ps1 -InstallerPath $installers[0].FullName -PreviousInstallerPath $env:STARSHOT_PREVIOUS_INSTALLER
       - name: Preserve Windows installation evidence
         if: always() && runner.os == 'Windows'
         uses: actions/upload-artifact@v4

@@ -74,7 +74,7 @@ mod capability_tests {
             ("pin_action", [false, false, true]),
             ("plugin:dialog|save", [false, false, false]),
         ] {
-            for (label, expected) in ["main", "capture-0", "pin-0"].into_iter().zip(permitted) {
+            for (label, expected) in ["main", "capture-42-0", "pin-0"].into_iter().zip(permitted) {
                 assert_eq!(
                     authority
                         .resolve_access(command, label, label, &tauri::ipc::Origin::Local)

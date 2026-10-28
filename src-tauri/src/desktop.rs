@@ -3,7 +3,7 @@ use crate::imaging::{self, ImagePayload, Rect};
 use crate::recovery::{self, RecoveredSession, RecoveryPoint, RecoveryStorage};
 use crate::updater::{self, UpdateStatus, Updates};
 use image::{DynamicImage, ImageFormat};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
     collections::HashMap,
@@ -90,10 +90,26 @@ struct Frame {
     image: DynamicImage,
     payload: FramePayload,
 }
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum CaptureAction {
+    #[default]
+    Edit,
+    Copy,
+    Save,
+    Pin,
+}
+#[derive(Serialize)]
+struct CaptureOutcome {
+    completed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+}
 #[derive(Default)]
 struct Context {
     operation: Mutex<()>,
     frames: Mutex<HashMap<String, Frame>>,
+    capture_restore_main: Mutex<bool>,
     current: Mutex<Option<ImagePayload>>,
     pins: Mutex<HashMap<String, ImagePayload>>,
     sequence: AtomicU64,
@@ -210,11 +226,20 @@ fn begin_capture(app: &AppHandle) -> Result<()> {
             "请在系统设置 → 隐私与安全性 → 屏幕与系统音频录制中允许星镜，然后重新打开应用".into(),
         );
     }
-    if let Some(main) = app.get_webview_window("main") {
-        main.hide().map_err(|e| e.to_string())?;
+    let main_was_visible = if let Some(main) = app.get_webview_window("main") {
+        let visible = main.is_visible().map_err(|e| e.to_string())?;
+        if visible {
+            main.hide().map_err(|e| e.to_string())?;
+        }
+        visible
+    } else {
+        false
+    };
+    *lock(&context.capture_restore_main)? = main_was_visible;
+    if main_was_visible {
+        // Only wait when the compositor actually has an editor to remove.
+        std::thread::sleep(Duration::from_millis(180));
     }
-    // Allow the compositor to remove the editor before freezing the display.
-    std::thread::sleep(Duration::from_millis(180));
     let result = (|| -> Result<()> {
         let monitors = xcap::Monitor::all().map_err(|e| format!("无法读取显示器：{e}"))?;
         if monitors.is_empty() {
@@ -240,6 +265,8 @@ fn begin_capture(app: &AppHandle) -> Result<()> {
         }
         let mut prepared = Vec::new();
         let mut total_pixels = 0_u64;
+        // Old queued finish/cancel requests must never address a later capture.
+        let capture_id = context.sequence.fetch_add(1, Ordering::Relaxed);
         for (index, monitor) in monitors.into_iter().enumerate() {
             let x = monitor.x().map_err(|e| e.to_string())?;
             let y = monitor.y().map_err(|e| e.to_string())?;
@@ -296,7 +323,7 @@ fn begin_capture(app: &AppHandle) -> Result<()> {
                 scale_factor: scale,
             };
             prepared.push(Prepared {
-                label: format!("capture-{index}"),
+                label: format!("capture-{capture_id}-{index}"),
                 x,
                 y,
                 width,
@@ -374,31 +401,76 @@ fn get_capture_frame(app: AppHandle, window: WebviewWindow) -> Result<FramePaylo
         .ok_or("截图会话已结束，请重新截图".into())
 }
 #[tauri::command]
-async fn finish_capture(app: AppHandle, window: WebviewWindow, rect: Rect) -> Result<()> {
+async fn finish_capture(
+    app: AppHandle,
+    window: WebviewWindow,
+    rect: Rect,
+    action: Option<CaptureAction>,
+    data_url: Option<String>,
+) -> Result<CaptureOutcome> {
     let label = window.label().to_string();
     tauri::async_runtime::spawn_blocking(move || {
         let context = app.state::<Context>();
         let _operation = lock(&context.operation)?;
         context.ensure_not_exiting()?;
         app.state::<Updates>().ensure_idle()?;
-        let result = {
+        let action = action.unwrap_or_default();
+        let image = {
             let frames = lock(&context.frames)?;
             let frame = frames.get(&label).ok_or("截图会话已结束")?;
-            rect.validate(frame.image.width(), frame.image.height())?;
-            let image = frame
-                .image
-                .crop_imm(rect.x, rect.y, rect.width, rect.height);
-            let seconds = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            imaging::payload(&image, format!("星镜截图-{seconds}.png"))?
+            imaging::capture_selection(&frame.image, rect, data_url.as_deref())?
         };
+        let seconds = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let name = format!("星镜截图-{seconds}.png");
+        // Encode once for recent-image state and any already-running editor. Copy and
+        // save operate on the decoded crop rather than decoding this PNG again.
+        let result = match data_url {
+            Some(data_url) => ImagePayload {
+                data_url,
+                width: image.width(),
+                height: image.height(),
+                name,
+            },
+            None => imaging::payload(&image, name)?,
+        };
+        let mut path = None;
+        match action {
+            CaptureAction::Edit => {}
+            CaptureAction::Copy => copy_decoded_image(image)?,
+            CaptureAction::Save => {
+                // A topmost capture overlay must not cover its native save dialog.
+                window.set_always_on_top(false).map_err(|e| e.to_string())?;
+                let saved = save_decoded_image(&app, &window, &image, &result.name);
+                let restored = window.set_always_on_top(true).map_err(|e| e.to_string());
+                path = saved?;
+                if path.is_none() {
+                    restored?;
+                    let _ = window.set_focus();
+                    return Ok(CaptureOutcome {
+                        completed: false,
+                        path: None,
+                    });
+                }
+            }
+            CaptureAction::Pin => create_pin_payload(&app, result.clone())?,
+        }
         *lock(&context.current)? = Some(result.clone());
         clear_capture(&app)?;
-        show_main(&app);
-        app.emit_to("main", "capture-complete", result)
-            .map_err(|e| e.to_string())
+        if action == CaptureAction::Edit {
+            show_main(&app);
+        }
+        // Quick actions keep an existing editor's recent images in sync without
+        // opening it. A newly created editor obtains current through its startup IPC.
+        if app.get_webview_window("main").is_some() {
+            let _ = app.emit_to("main", "capture-complete", result);
+        }
+        Ok(CaptureOutcome {
+            completed: true,
+            path,
+        })
     })
     .await
     .map_err(|_| "裁切任务异常")?
@@ -412,8 +484,11 @@ async fn cancel_capture(app: AppHandle, window: WebviewWindow) -> Result<()> {
         if label != "main" && !lock(&context.frames)?.contains_key(&label) {
             return Err("截图会话已结束".into());
         }
+        let restore_main = *lock(&context.capture_restore_main)?;
         clear_capture(&app)?;
-        show_main(&app);
+        if restore_main {
+            show_main(&app);
+        }
         Ok(())
     })
     .await
@@ -439,59 +514,67 @@ async fn save_image(
         context.ensure_not_exiting()?;
         app.state::<Updates>().ensure_idle()?;
         let image = imaging::decode_data_url(&data_url)?;
-        let name = imaging::filename(&suggested_name);
-        let file = app
-            .dialog()
-            .file()
-            .set_parent(&window)
-            .set_file_name(&name)
-            .add_filter("图片 PNG / JPEG", &["png", "jpg", "jpeg"])
-            .blocking_save_file();
-        let Some(file) = file else {
-            return Ok(None);
-        };
-        let mut path = file.into_path().map_err(|_| "请选择本地文件位置")?;
-        let extension = path
-            .extension()
-            .and_then(|x| x.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        let format = match extension.as_str() {
-            "jpg" | "jpeg" => ImageFormat::Jpeg,
-            "png" => ImageFormat::Png,
-            "" => {
-                path.set_extension("png");
-                ImageFormat::Png
-            }
-            _ => return Err("请使用 .png、.jpg 或 .jpeg 文件扩展名".into()),
-        };
-        let mut encoded = Cursor::new(Vec::new());
-        if format == ImageFormat::Jpeg {
-            let mut rgba = image.to_rgba8();
-            for pixel in rgba.pixels_mut() {
-                let alpha = u32::from(pixel[3]);
-                for channel in &mut pixel.0[..3] {
-                    *channel =
-                        ((u32::from(*channel) * alpha + 255 * (255 - alpha) + 127) / 255) as u8;
-                }
-                pixel[3] = 255;
-            }
-            DynamicImage::ImageRgba8(rgba)
-                .to_rgb8()
-                .write_to(&mut encoded, format)
-                .map_err(|e| format!("图片编码失败：{e}"))?;
-        } else {
-            image
-                .write_to(&mut encoded, format)
-                .map_err(|e| format!("图片编码失败：{e}"))?;
-        }
-        // Same-directory staging makes replacement atomic on macOS and Windows.
-        imaging::atomic_save(&path, encoded.get_ref())?;
-        *lock(&context.last_saved)? = Some(path.clone());
-        Ok(Some(path.to_string_lossy().into_owned()))
+        save_decoded_image(&app, &window, &image, &suggested_name)
     })
     .await
     .map_err(|_| "保存任务异常")?
+}
+// Caller holds Context::operation and has checked lifecycle/update gates.
+fn save_decoded_image(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    image: &DynamicImage,
+    suggested_name: &str,
+) -> Result<Option<String>> {
+    let name = imaging::filename(suggested_name);
+    let file = app
+        .dialog()
+        .file()
+        .set_parent(window)
+        .set_file_name(&name)
+        .add_filter("图片 PNG / JPEG", &["png", "jpg", "jpeg"])
+        .blocking_save_file();
+    let Some(file) = file else {
+        return Ok(None);
+    };
+    let mut path = file.into_path().map_err(|_| "请选择本地文件位置")?;
+    let extension = path
+        .extension()
+        .and_then(|x| x.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let format = match extension.as_str() {
+        "jpg" | "jpeg" => ImageFormat::Jpeg,
+        "png" => ImageFormat::Png,
+        "" => {
+            path.set_extension("png");
+            ImageFormat::Png
+        }
+        _ => return Err("请使用 .png、.jpg 或 .jpeg 文件扩展名".into()),
+    };
+    let mut encoded = Cursor::new(Vec::new());
+    if format == ImageFormat::Jpeg {
+        let mut rgba = image.to_rgba8();
+        for pixel in rgba.pixels_mut() {
+            let alpha = u32::from(pixel[3]);
+            for channel in &mut pixel.0[..3] {
+                *channel = ((u32::from(*channel) * alpha + 255 * (255 - alpha) + 127) / 255) as u8;
+            }
+            pixel[3] = 255;
+        }
+        DynamicImage::ImageRgba8(rgba)
+            .to_rgb8()
+            .write_to(&mut encoded, format)
+            .map_err(|e| format!("图片编码失败：{e}"))?;
+    } else {
+        image
+            .write_to(&mut encoded, format)
+            .map_err(|e| format!("图片编码失败：{e}"))?;
+    }
+    // Same-directory staging makes replacement atomic on macOS and Windows.
+    imaging::atomic_save(&path, encoded.get_ref())?;
+    *lock(&app.state::<Context>().last_saved)? = Some(path.clone());
+    Ok(Some(path.to_string_lossy().into_owned()))
 }
 #[tauri::command]
 async fn copy_image(app: AppHandle, window: WebviewWindow, data_url: String) -> Result<()> {
@@ -501,18 +584,21 @@ async fn copy_image(app: AppHandle, window: WebviewWindow, data_url: String) -> 
         let _operation = lock(&context.operation)?;
         context.ensure_not_exiting()?;
         app.state::<Updates>().ensure_idle()?;
-        let image = imaging::decode_data_url(&data_url)?.into_rgba8();
-        arboard::Clipboard::new()
-            .map_err(|e| format!("无法打开剪贴板：{e}"))?
-            .set_image(arboard::ImageData {
-                width: image.width() as usize,
-                height: image.height() as usize,
-                bytes: Cow::Owned(image.into_raw()),
-            })
-            .map_err(|e| format!("复制图片失败：{e}"))
+        copy_decoded_image(imaging::decode_data_url(&data_url)?)
     })
     .await
     .map_err(|_| "复制图片任务异常")?
+}
+fn copy_decoded_image(image: DynamicImage) -> Result<()> {
+    let image = image.into_rgba8();
+    arboard::Clipboard::new()
+        .map_err(|e| format!("无法打开剪贴板：{e}"))?
+        .set_image(arboard::ImageData {
+            width: image.width() as usize,
+            height: image.height() as usize,
+            bytes: Cow::Owned(image.into_raw()),
+        })
+        .map_err(|e| format!("复制图片失败：{e}"))
 }
 #[tauri::command]
 async fn copy_text(app: AppHandle, window: WebviewWindow, text: String) -> Result<()> {
@@ -564,24 +650,38 @@ fn create_pin(app: &AppHandle, data_url: &str) -> Result<()> {
     context.ensure_not_exiting()?;
     app.state::<Updates>().ensure_idle()?;
     let image = imaging::decode_data_url(data_url)?;
+    create_pin_payload(
+        app,
+        ImagePayload {
+            data_url: data_url.to_owned(),
+            width: image.width(),
+            height: image.height(),
+            name: "星镜贴图".into(),
+        },
+    )
+}
+// The payload has already been decoded/validated by the caller. Keeping the
+// operation lock at the entry points also permits capture -> pin without reentry.
+fn create_pin_payload(app: &AppHandle, payload: ImagePayload) -> Result<()> {
+    let context = app.state::<Context>();
     let mut pins = lock(&context.pins)?;
     if pins.len() >= 12 {
         return Err("最多同时保留 12 张贴图，请先关闭一些贴图".into());
     }
     let id = context.sequence.fetch_add(1, Ordering::Relaxed);
     let label = format!("pin-{id}");
-    let payload = imaging::payload(&image, "星镜贴图".into())?;
+    let (width, height) = (payload.width, payload.height);
     pins.insert(label.clone(), payload);
     drop(pins);
-    let scale = (800.0 / f64::from(image.width()))
-        .min(650.0 / f64::from(image.height()))
+    let scale = (800.0 / f64::from(width))
+        .min(650.0 / f64::from(height))
         .min(1.0);
     let result =
         WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html?view=pin".into()))
             .title("星镜 · 桌面贴图")
             .inner_size(
-                (f64::from(image.width()) * scale).max(160.0),
-                (f64::from(image.height()) * scale + 44.0).max(100.0),
+                (f64::from(width) * scale).max(160.0),
+                (f64::from(height) * scale + 44.0).max(100.0),
             )
             .min_inner_size(100.0, 80.0)
             .center()
@@ -1402,11 +1502,22 @@ pub fn run() {
                 } else if window.label().starts_with("capture-") {
                     api.prevent_close();
                     let app = window.app_handle().clone();
+                    let label = window.label().to_string();
                     tauri::async_runtime::spawn_blocking(move || {
                         let context = app.state::<Context>();
                         if let Ok(_operation) = context.operation.lock() {
-                            let _ = clear_capture(&app);
-                            show_main(&app);
+                            // A queued close after a successful quick action is stale.
+                            let active = context
+                                .frames
+                                .lock()
+                                .is_ok_and(|frames| frames.contains_key(&label));
+                            let restore = context.capture_restore_main.lock().is_ok_and(|v| *v);
+                            if active {
+                                let _ = clear_capture(&app);
+                                if restore {
+                                    show_main(&app);
+                                }
+                            }
                         };
                     });
                 }
@@ -1487,7 +1598,41 @@ pub fn run() {
 
 #[cfg(test)]
 mod lifecycle_tests {
-    use super::EditorLifecycle;
+    use super::{CaptureAction, CaptureOutcome, EditorLifecycle};
+
+    #[test]
+    fn capture_action_contract_rejects_unknown_actions_and_reports_save_cancellation() {
+        assert_eq!(
+            Option::<CaptureAction>::None.unwrap_or_default(),
+            CaptureAction::Edit
+        );
+        for (text, action) in [
+            ("edit", CaptureAction::Edit),
+            ("copy", CaptureAction::Copy),
+            ("save", CaptureAction::Save),
+            ("pin", CaptureAction::Pin),
+        ] {
+            assert_eq!(
+                serde_json::from_value::<CaptureAction>(serde_json::json!(text)).unwrap(),
+                action
+            );
+        }
+        for invalid in [
+            serde_json::json!("upload"),
+            serde_json::json!("COPY"),
+            serde_json::json!(4),
+        ] {
+            assert!(serde_json::from_value::<CaptureAction>(invalid).is_err());
+        }
+        assert_eq!(
+            serde_json::to_value(CaptureOutcome {
+                completed: false,
+                path: None
+            })
+            .unwrap(),
+            serde_json::json!({"completed":false})
+        );
+    }
 
     #[test]
     fn unknown_or_busy_editor_cannot_exit_or_release_and_stale_release_is_rejected() {

@@ -85,10 +85,14 @@ pub fn decode_data_url(data: &str) -> Result<DynamicImage, String> {
     if data.len() > MAX_BYTES * 4 / 3 + 128 {
         return Err("图片文件超过 64 MB".into());
     }
-    let encoded = data
-        .strip_prefix("data:image/png;base64,")
-        .or_else(|| data.strip_prefix("data:image/jpeg;base64,"))
-        .ok_or("仅支持 PNG 或 JPEG 图片")?;
+    let (encoded, expected_format) =
+        if let Some(encoded) = data.strip_prefix("data:image/png;base64,") {
+            (encoded, ImageFormat::Png)
+        } else if let Some(encoded) = data.strip_prefix("data:image/jpeg;base64,") {
+            (encoded, ImageFormat::Jpeg)
+        } else {
+            return Err("仅支持 PNG 或 JPEG 图片".into());
+        };
     let bytes = STANDARD.decode(encoded).map_err(|_| "图片编码无效")?;
     if bytes.len() > MAX_BYTES {
         return Err("图片文件超过 64 MB".into());
@@ -96,8 +100,8 @@ pub fn decode_data_url(data: &str) -> Result<DynamicImage, String> {
     let reader = ImageReader::new(Cursor::new(&bytes))
         .with_guessed_format()
         .map_err(|_| "无法识别图片")?;
-    if !matches!(reader.format(), Some(ImageFormat::Png | ImageFormat::Jpeg)) {
-        return Err("仅支持 PNG 或 JPEG 图片".into());
+    if reader.format() != Some(expected_format) {
+        return Err("图片内容与声明的 PNG / JPEG 格式不一致".into());
     }
     let (width, height) = reader.into_dimensions().map_err(|_| "图片已损坏")?;
     validate_size(width, height)?;
@@ -134,6 +138,28 @@ pub fn payload(image: &DynamicImage, name: String) -> Result<ImagePayload, Strin
         height: image.height(),
         name,
     })
+}
+
+// The overlay may supply its flattened annotations, but never a different-sized image
+// or a rectangle outside the frozen frame owned by that window.
+pub fn capture_selection(
+    frame: &DynamicImage,
+    rect: Rect,
+    annotated_png: Option<&str>,
+) -> Result<DynamicImage, String> {
+    rect.validate(frame.width(), frame.height())?;
+    if let Some(data) = annotated_png {
+        if !data.starts_with("data:image/png;base64,") {
+            return Err("截图标注只接受 PNG 图片".into());
+        }
+        let image = decode_data_url(data)?;
+        if image.width() != rect.width || image.height() != rect.height {
+            return Err("标注图片尺寸与截图选区不一致，请重试".into());
+        }
+        Ok(image)
+    } else {
+        Ok(frame.crop_imm(rect.x, rect.y, rect.width, rect.height))
+    }
 }
 
 pub fn filename(suggested: &str) -> String {
@@ -213,6 +239,49 @@ mod tests {
                 .0,
             [22, 44, 66, 255]
         );
+    }
+    #[test]
+    fn quick_capture_uses_exact_crop_or_matching_flattened_png() {
+        let frame = DynamicImage::ImageRgba8(image::RgbaImage::from_fn(8, 6, |x, y| {
+            image::Rgba([x as u8, y as u8, 127, 255])
+        }));
+        let rect = Rect {
+            x: 2,
+            y: 1,
+            width: 3,
+            height: 2,
+        };
+        let cropped = capture_selection(&frame, rect, None).unwrap().into_rgba8();
+        assert_eq!(cropped.dimensions(), (3, 2));
+        assert_eq!(cropped.get_pixel(0, 0).0, [2, 1, 127, 255]);
+        assert_eq!(cropped.get_pixel(2, 1).0, [4, 2, 127, 255]);
+        let mask = DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            3,
+            2,
+            image::Rgba([0, 0, 0, 255]),
+        ));
+        let png = png_data_url(&mask).unwrap();
+        assert_eq!(
+            capture_selection(&frame, rect, Some(&png))
+                .unwrap()
+                .into_rgba8(),
+            mask.into_rgba8()
+        );
+        let wrong = png_data_url(&DynamicImage::new_rgba8(3, 3)).unwrap();
+        assert!(capture_selection(&frame, rect, Some(&wrong)).is_err());
+        assert!(capture_selection(&frame, Rect { x: 7, ..rect }, Some(&png)).is_err());
+        assert!(capture_selection(&frame, Rect { width: 0, ..rect }, None).is_err());
+        assert!(capture_selection(&frame, rect, Some("data:image/jpeg;base64,broken")).is_err());
+        assert!(capture_selection(&frame, rect, Some("data:image/png;base64,broken")).is_err());
+        let mut jpeg = Cursor::new(Vec::new());
+        DynamicImage::new_rgb8(rect.width, rect.height)
+            .write_to(&mut jpeg, ImageFormat::Jpeg)
+            .unwrap();
+        let mislabeled = format!(
+            "data:image/png;base64,{}",
+            STANDARD.encode(jpeg.into_inner())
+        );
+        assert!(capture_selection(&frame, rect, Some(&mislabeled)).is_err());
     }
     #[test]
     fn rejects_corrupt_oversized_and_out_of_bounds() {
