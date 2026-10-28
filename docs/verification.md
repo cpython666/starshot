@@ -150,7 +150,7 @@ Homebrew真实安装到仓库忽略的隔离目录；brew info的安装版本、
 
 仍未完整验收：旧版真实更新安装及失败恢复、原生GUI的OCR→应用遮盖→备份退出全链路、混合DPI/多显示器、系统权限、全局热键、开机启动和平台信任提示。浏览器、单元、真实worker与隔离安装各自覆盖不同层级，不能合并表述为完整原生使用已通过；本轮交付为开发预览。
 
-## 2026-10-27 · 轻量截图改进（0.3.0之后，未发布工作区）
+## 2026-10-27 · 轻量截图改进（发布前验证，后续收入0.3.1）
 
 根据用户提供的竞品视频核对交互，改为选区底部工具条，按需进入更多编辑；明确星镜不做星伴。参考视频只用于观察流程，没有作为测试像素或加入Git。以下检查针对本次本地源码，不能用上文0.3.0发行CI代替。
 
@@ -165,7 +165,7 @@ Homebrew真实安装到仓库忽略的隔离目录；brew info的安装版本、
 
 仍待验收：本轮Windows平台构建与原生运行；真实截图的启动耗时、系统复制/保存/贴图完整链路、多屏和混合DPI。表格相连格线、严重缺边和极低对比可能漏检，窗口边界/像素启发式不等同于系统控件语义识别。本轮没有提交、推送、发布或更新Homebrew，公开0.3.0包不包含这些修改。
 
-## 2026-10-28 · 更新源排查与0.3.1待发布准备
+## 2026-10-28 · 更新源排查与0.3.1发布前准备
 
 用户反馈检查更新后仍是旧交互。只读GitHub API核对公开列表只有v0.3.0，draft=false、prerelease=true；固定tag的latest.json返回HTTP200且version=0.3.0。客户端内置的`releases/latest/download/latest.json`和GitHub latest API均返回HTTP404，尚无稳定更新入口。新交互仍在本地工作区，未进入公开0.3.0包，不能由旧包的检查更新获得。
 
@@ -175,4 +175,24 @@ Homebrew真实安装到仓库忽略的隔离目录；brew info的安装版本、
 
 0.3.1本地macOS app/DMG构建成功，使用官方应用标识com.starshot.desktop；核对版本0.3.1、arm64和codesign严格检查通过，仍为ad-hoc、未公证。DMG位于src-tauri/target/release/bundle/dmg/Starshot_0.3.1_aarch64.dmg，4,981,929字节，SHA-256 `edf8e41c8ceabd26b3407153527c941548e35e37d7b4e229ea772b8c45130d58`。这是本地普通安装包，没有安装/启动或用于更新现有验收应用；最终远端签名发行包需另行核验。
 
-本轮没有提交、推送、创建标签或公开发行。0.3.1双平台CI、签名发行包和公开更新源验证仍待后续发布流程；前一轮0.3.0的CI不能作为本轮构建证据。
+截至该准备阶段，尚未提交、推送、创建标签或公开发行。0.3.1双平台CI、签名发行包和公开更新源验证随后在下节授权发布流程中完成；前一轮0.3.0的CI不能作为本轮构建证据。
+
+## 2026-10-28 · 0.3.1发行验证
+
+用户在完成更新源排查后明确授权提交、推送、发布和同步Homebrew。候选1bef233的CI 40680770025在两平台及签名任务的模型准备阶段均因上游HTTP 403失败，未进入安装升级验证。将此前已核验的原模型与来源、许可、SHA256SUMS发布到独立的 `ocr-models-v1` 构建依赖预览Release，保持两个模型共12,226,852字节及原SHA不变；修改下载地址后的候选为fe609e8。本机空目录匿名下载与大小/SHA验证通过，Node52项为51通过、1项本机minisign缺失而跳过。镜像不属于应用更新，不进入稳定latest，图片仍不上传，模型仍只在构建时下载。
+
+最终源码与`v0.3.1`标签为 `fe609e8171b759cb027ab6ff434e7c3d95f50071`。普通验证[40681522684](https://github.com/cpython666/starshot/actions/runs/40681522684)与签名发行[40683246836](https://github.com/cpython666/starshot/actions/runs/40683246836)全部成功，覆盖版本同步、前端生产构建、Rust核心/桌面测试、格式检查及双平台安装包。发行validate的Node52项全部通过，包括真实minisign、篡改包及版本绑定拒绝测试。
+
+| 最终公开文件 | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| Starshot_0.3.1_aarch64.dmg | 5,019,285 | `bbd926e229248afa8533dafa31755060ed216029d45b1b2d4a7a7810b12a86ee` |
+| Starshot_0.3.1_aarch64.app.tar.gz | 5,133,238 | `b054668ce7a73d035868bb3d8428c6645a1a2121f05e4096b5470fc6a9b98271` |
+| Starshot_0.3.1_x64-setup.exe | 16,342,664 | `5c4ffebb23cc4ee3fbd64d7513ab20379ae1b53b62b249a5b2e3faf65eacf2fa` |
+
+- 完整CI artifact为26,466,890字节，GitHub提供的SHA-256 `bcbb1d1060b3d89e99c3b09993695f63bf295f119df2d38b8602440f0609ed4b`与下载文件一致；ZIP完整性、8个文件集合、SHA256SUMS、清单版本/平台/URL/签名及GitHub草稿资产digest全部匹配。下载中断后只续传缺失字节，再校验完整哈希。证据`artifacts/release-0.3.1/release-verification.json`。
+- macOS最终DMG只读挂载，版本/构建号0.3.1、正式标识com.starshot.desktop、arm64、模型许可与严格codesign检查通过。`macos-updater-smoke`实际运行1项通过：用公开0.3.0临时副本，损坏签名包被Tauri拒绝且`diff -qr`确认旧包不变；真实已签名0.3.1更新包安装成功、版本及codesign通过。使用mock app runtime，但执行的验签和应用包替换是真实插件操作；没有启动、重启或替换用户应用。日志`artifacts/release-031-macos-upgrade.log`。
+- Windows最终安装器的实际SHA与隔离升级报告一致。公开0.3.0安装、旧版OCR、`/UPDATE`升级至0.3.1、新版元数据及OCR、卸载均通过；6项阶段passed，退出码均0，`errors=[]`，无意外GUI进程。证据为[最终安装检查附件](https://github.com/cpython666/starshot/actions/runs/40683246836/artifacts/12813848071)，本地`artifacts/windows-release-40683246836/`。这验证安装载荷升级，不等同于GUI下载/重启验收。
+- [v0.3.1](https://github.com/cpython666/starshot/releases/tag/v0.3.1)于2026-10-28 12:15:48 UTC公开，draft=false、prerelease=false并设为latest。匿名获取内置稳定更新地址成功，latest.json与CI逐字节一致；GitHub latest API返回v0.3.1。正在运行的Starshot Verify 0.3.0原生设置页实际显示「发现新版本0.3.1」及更新按钮。本次保留其当前编辑，未替换或重启；独立验收标识与正式包的数据目录不同，不能假定恢复点自动迁移。
+- Homebrew最终Tap提交为[98abcab](https://github.com/cpython666/homebrew-tap/commit/98abcab34c228aa64d6e4faf68165b37a88c6bcb)。首次audit因默认livecheck将模型依赖标签读成版本1而失败；生成器与Cask改用github_latest后，Ruby/style/livecheck/在线严格audit/fetch均通过。独立目录实际安装版本与签名核对、卸载和清理登记均通过，未启动应用或移除quarantine，公开DMG缓存与上表一致。详情见[Homebrew指南](homebrew.md)。生成器调整后的本机Node、前端生产构建、Rust core和fmt再次通过；该调整不改变已发布应用二进制。
+
+仍未全部覆盖：应用GUI完整下载、安装后自动重启及会话恢复，Windows安装器启动失败后的旧版重启，多显示器/混合DPI、真实截图启动与各原生交互矩阵。macOS仍为ad-hoc且未Apple公证，Windows尚无平台发行者证书；更新签名及稳定latest发布不改变这些边界。

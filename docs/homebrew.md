@@ -2,7 +2,7 @@
 
 星镜使用已有的公开安装源 [cpython666/homebrew-tap](https://github.com/cpython666/homebrew-tap)，目标文件为 `Casks/starshot.rb`；现有 `Casks/starclip.rb` 独立保留。2026-10-26 核对远端默认分支为 `main`，基线提交为 `e11f8f06a43e4754855a8f101a39bc712aebdf08`，仓库没有额外 AGENTS 或发布工作流。
 
-[v0.3.0 开发预览版](https://github.com/cpython666/starshot/releases/tag/v0.3.0)已于2026-10-27北京时间公开。Tap的 `Casks/starshot.rb` 与安装说明已发布在提交 [`0b2d188`](https://github.com/cpython666/homebrew-tap/commit/0b2d18875071fa37f3df82bff423cca3acdafdbc)，可执行 `brew install --cask cpython666/tap/starshot`。仅提供Apple Silicon、macOS 12+；Windows使用独立NSIS安装包。
+[v0.3.1](https://github.com/cpython666/starshot/releases/tag/v0.3.1)已于2026-10-28北京时间公开并成为应用内最新更新。Tap的 `Casks/starshot.rb` 与安装说明已同步，最终提交为 [`98abcab`](https://github.com/cpython666/homebrew-tap/commit/98abcab34c228aa64d6e4faf68165b37a88c6bcb)，可执行 `brew install --cask cpython666/tap/starshot`。仅提供Apple Silicon、macOS 12+；Windows使用独立NSIS安装包。
 
 ## 生成 Cask
 
@@ -10,21 +10,21 @@
 
 ```sh
 node scripts/homebrew-cask.mjs \
-  artifacts/release-0.3.0/Starshot_0.3.0_aarch64.dmg \
+  artifacts/release-0.3.1/Starshot_0.3.1_aarch64.dmg \
   artifacts/homebrew-tap/Casks/starshot.rb
 ```
 
-路径中的 `artifacts/release-0.3.0` 是示例，替换为最终核验包所在目录。生成器输出版本、字节数、SHA-256 和文件位置；如果项目最低 macOS 版本不再是当前的 12.0，会停止并要求同步 Cask 的平台要求。
+路径中的 `artifacts/release-0.3.1` 是示例，替换为最终核验包所在目录。生成器输出版本、字节数、SHA-256 和文件位置；如果项目最低 macOS 版本不再是当前的 12.0，会停止并要求同步 Cask 的平台要求。
 
-Cask 固定到该版本的 GitHub Release 附件，声明 Apple Silicon 和 macOS Monterey 12 起，不提供 Intel 包；保留预览版及尚未 Apple 公证的安装提示。不执行安装脚本，不移除 quarantine，不设置删除本地编辑恢复点的 `zap`。
+Cask 固定到该版本的 GitHub Release 附件，声明 Apple Silicon 和 macOS Monterey 12 起，不提供 Intel 包；保留尚未 Apple 公证的安装提示。不执行安装脚本，不移除 quarantine，不设置删除本地编辑恢复点的 `zap`。`livecheck`显式使用`github_latest`策略，与应用内稳定更新通道一致；不能使用默认Git标签检测，否则会把构建依赖`ocr-models-v1`误识别为应用版本1。
 
 星镜可以在应用内检查、下载和安装更新，因此声明 `auto_updates true`。Homebrew 将这类应用视为具备自更新能力，即使检查更新由用户手动触发。[Cask 字段说明](https://docs.brew.sh/Cask-Cookbook)
 
 ## 发布与检查顺序
 
 1. 完成最终 DMG 的版本、架构、SHA-256 和签名检查；只从这份文件生成 `starshot.rb`。
-2. 在星镜仓库公开对应预览 Release 和同名附件，确认匿名下载可用且下载字节与本机核验一致。
-3. 在 Tap 的工作副本加入生成的 Cask，并更新 Tap README 的星镜安装入口与预览边界；保留星笺的说明与安装描述。
+2. 在星镜仓库公开对应 Release 和同名附件，确认匿名下载可用且下载字节与本机核验一致。
+3. 在 Tap 的工作副本加入生成的 Cask，并更新 Tap README 的星镜安装入口、版本与平台签名状态；保留星笺的说明与安装描述。
 4. 执行 Ruby 语法及 Homebrew style、online audit、fetch；安装验收需在隔离目标目录进行，不能覆盖用户已有应用。预览 Release 可能触发 prerelease 审查提示，应如实记录。
 5. 核对最终差异后提交、推送 Tap，核验远端 `Casks/starshot.rb` 与本地一致。未完成这一步不能宣称一行安装已上线。
 
@@ -53,7 +53,14 @@ brew uninstall --cask cpython666/tap/starshot
 
 `--greedy` 将声明自更新的 Cask 纳入 Homebrew 升级。升级前应导出或备份当前编辑并退出星镜；不使用 `--force` 覆盖已有手动安装的版本。普通卸载只管理应用，不主动删除星镜恢复点。[Homebrew 命令说明](https://docs.brew.sh/Manpage)
 
-GitHub 的 prerelease 可以通过固定 tag 下载，但不能成为 latest release。若 `v0.3.0` 标为预览，Cask 下载可用，不意味着当前 `/releases/latest/download/latest.json` 应用内更新地址已经指向它。[GitHub Release 规则](https://docs.github.com/en/rest/releases/releases#create-a-release)
+GitHub 的 prerelease 可以通过固定 tag 下载，但不能成为 latest release。`v0.3.0`当时只提供固定tag预览下载；`v0.3.1`现已成为`/releases/latest/download/latest.json`的公开目标。[GitHub Release 规则](https://docs.github.com/en/rest/releases/releases#create-a-release)
+
+## 0.3.1 已验证结果
+
+- 最终DMG为5,019,285字节，SHA-256为 `bbd926e229248afa8533dafa31755060ed216029d45b1b2d4a7a7810b12a86ee`。CI产物、公开下载、生成的Cask及Homebrew实际缓存一致。
+- Ruby语法、`brew style`、`brew livecheck`、在线严格`brew audit`、`brew fetch`均通过。初次audit发现默认livecheck误读构建依赖标签为版本1，改用`github_latest`后实际结果为`0.3.1 ==> 0.3.1`；不是跳过检查。
+- Homebrew实际安装到忽略目录`artifacts/homebrew-install-0.3.1/`，确认登记版本0.3.1、正式应用标识、arm64和严格codesign完整性；卸载后该应用与Cask安装登记均已移除。设置`HOMEBREW_NO_INSTALL_CLEANUP=1`，未启动应用、移除quarantine或覆盖用户已有程序。
+- Tap最终公开提交98abcab；本机实际Tap与工作克隆中的Cask一致。证据在`artifacts/release-0.3.1/`的brew日志及`brew-install-verification.json`，双平台发行和真实旧版更新检查见[验证记录](verification.md)。
 
 ## 0.3.0 已验证结果
 

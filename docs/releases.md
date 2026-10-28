@@ -37,6 +37,16 @@ npm run version:check -- v0.3.1
 - `release-manifest.mjs`：要求完整且唯一的平台产物，真实验签并核对版本绑定，然后生成 latest.json、SHA256SUMS 和发布说明。
 - 流程只创建/更新 Release 草稿，不自动公开；拒绝覆盖已发布的同版本 Release 及已有草稿资产。已有资产的草稿需要重跑时，先人工检查并删除旧草稿，流程不会覆盖文件。
 
+构建模型由 `scripts/prepare-ocr-models.mjs` 下载。2026-10-28上游原地址返回403，现从独立的 `ocr-models-v1` 构建依赖Release获取已核验的原版副本；大小、SHA-256与0.3.0内置模型完全一致，保留作者、原始来源与CC-BY-SA-4.0许可。该Release标为prerelease，不进入应用稳定更新通道；不要将模型二进制加入Git或改成运行时下载。
+
+0.3.1的Windows CI先校验并安装公开0.3.0，再用最终NSIS执行隔离升级，检查版本、卸载登记、固定像素OCR与卸载清理。macOS可在本机运行下列默认忽略的测试：目录中放公开0.3.0的 `Starshot.app`、候选版 `latest.json` 和对应已签名 `.app.tar.gz`，测试仅替换临时副本，并检查损坏包被拒绝、旧包不变和新版签名完整性。两项均不等同于应用GUI的下载、重启及会话恢复验收。
+
+```sh
+STARSHOT_UPDATER_SMOKE_DIR="$PWD/artifacts/release-0.3.1/macos-updater-smoke" \
+  cargo test --locked --manifest-path src-tauri/Cargo.toml \
+  --features updater-smoke --test macos-updater-smoke -- --ignored --nocapture
+```
+
 预期产物为 macOS 的 DMG / app.tar.gz / 签名，Windows 的 NSIS exe / 签名。`latest.json` 同时包含 `darwin-aarch64` 与 `windows-x86_64`。稳定更新地址为 `https://github.com/cpython666/starshot/releases/latest/download/latest.json`，Release 必须公开且成为最新稳定版本才能用于客户端更新。
 
 Tauri 更新签名与平台代码签名不是同一件事。目前 macOS 默认 ad-hoc 签名，未 Apple 公证；Windows 未配置发行者证书。macOS 可配置 APPLE_SIGNING_IDENTITY、APPLE_CERTIFICATE、APPLE_CERTIFICATE_PASSWORD 以及 APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID。未取得平台证书不能声称已解决 Gatekeeper 或 SmartScreen 提示。
@@ -50,6 +60,12 @@ Tauri 更新签名与平台代码签名不是同一件事。目前 macOS 默认 
 
 当前执行过的检查与尚未验证项以 docs/verification.md 为准。
 
-## 0.3.0 Homebrew开发预览
+## 当前公开版本：0.3.1
+
+[v0.3.1](https://github.com/cpython666/starshot/releases/tag/v0.3.1)于2026-10-28 12:15:48 UTC公开，源码标签为 `fe609e8`，`draft=false`、`prerelease=false`，已设为latest。普通验证40681522684与签名发行40683246836全部通过；公开稳定清单与CI最终文件逐字节一致，运行中的0.3.0原生应用实际显示发现0.3.1。Homebrew Tap已同步到 `98abcab`，在线审查、下载及隔离安装/卸载通过。
+
+Windows实际升级与macOS临时副本更新安装已验证；应用GUI完整下载/重启/会话恢复、混合DPI及全部原生交互仍未全部验收。独立验收包 `com.starshot.verify-030` 与正式包使用不同数据目录，更新前应保存当前编辑，不能假定旧验收恢复点自动出现在正式包内；本次只在该运行中的验收包内检查更新，未替换或重启它。具体包哈希与验收记录见[验证记录](verification.md)。
+
+## 历史：0.3.0 Homebrew开发预览
 
 用户明确要求完成Homebrew分发。[v0.3.0](https://github.com/cpython666/starshot/releases/tag/v0.3.0)已于2026-10-26 17:23:11 UTC公开为prerelease，标签对应源码 `cd7a691`。双平台安装包、Tauri更新签名与校验清单齐全，Cask已在 `cpython666/homebrew-tap` 的 `0b2d188`发布并通过隔离安装/卸载；没有设为最新稳定版。预览版不改变应用内稳定更新地址，也不等于旧版升级、平台签名或全部原生矩阵已经验收。实际发布结果见[Homebrew指南](homebrew.md)与[验证记录](verification.md)。

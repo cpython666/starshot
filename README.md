@@ -2,12 +2,12 @@
 
 **把灵感，定格成星。** 本地优先的桌面截图、标注、置顶贴图与图片美化工具，使用 Rust / Tauri 2 / Vue 3 / TypeScript。名称、中文界面和五套外观沿用用户的星空系列偏好，作为独立产品开发，不包含桌面宠物。
 
-当前版本 **0.3.0 开发预览版**，macOS / Windows 同为目标平台。原生实测、自动检查、双平台构建和安装结果分别记录在 [验证记录](docs/verification.md)。
+当前版本 **0.3.1**，已进入应用内更新通道，macOS / Windows 同为目标平台。原生实测、自动检查、双平台构建和安装结果分别记录在 [验证记录](docs/verification.md)。
 
 ## 当前功能
 
 - 按需冻结多显示器画面；系统窗口边界吸附与本地矩形边缘预判，支持手动框选、8向调整、拖动、1px / 10px键盘微调、放大镜和HEX读数。
-- 区域截图后进入编辑器；PNG / JPEG / WebP 导入；延时3 / 5 / 10秒截图。
+- 截图后在选区下方直接标注、撤销/重做、复制、保存和贴图；主动选择「更多编辑」才进入完整页面。PNG / JPEG / WebP 导入；延时3 / 5 / 10秒截图。
 - 箭头、矩形、椭圆、画笔、荧光笔、文字、序号、马赛克、实心遮盖；对象选择/移动/单独修改删除，PNG贴纸旋转缩放、文字水印；非破坏裁剪、撤销重做。
 - 主动本地识别手机号、邮箱、证件、银行卡和常见凭据，预览勾选后实心打码。macOS支持中英文，Windows主要支持拉丁文字和数字；仍需复核漏检，扫描不含装饰背景。
 - 渐变、纯色、透明、本地图片背景；留白、圆角、边框、阴影；自适应、1:1、4:3、16:9、9:16画布。
@@ -18,13 +18,13 @@
 
 - 设置内手动检查更新、下载并校验签名；完成后弹出「安装并重启」或「稍后安装」。确认安装时备份最新编辑会话与旧应用副本，安装成功后自动重启，支持恢复本机会话。
 
-源码仓库：[cpython666/starshot](https://github.com/cpython666/starshot)。版本同步与签名流程见 [发布指南](docs/releases.md)，[0.3.0 开发预览版已公开](https://github.com/cpython666/starshot/releases/tag/v0.3.0)，Homebrew安装与验收边界见 [分发说明](docs/homebrew.md)；0.1.0需手动升级才能获得应用内更新。
+源码仓库：[cpython666/starshot](https://github.com/cpython666/starshot)。版本同步与签名流程见 [发布指南](docs/releases.md)，[0.3.1 已公开](https://github.com/cpython666/starshot/releases/tag/v0.3.1)，Homebrew安装与验收边界见 [分发说明](docs/homebrew.md)；0.1.0需手动升级才能获得应用内更新。
 
 浏览器可以完整体验导入、原创示例区域选择、标注、美化与下载；浏览器中的截图为明确标示的原创示例，真正桌面截图及置顶贴图仅原生版提供。
 
-工作区0.3.1待发布版新增就地截图工具条、细边/圆角候选识别与显示尺寸预览优化；尚未包含在下方已发布的0.3.0安装包中，验证层级见[验证记录](docs/verification.md)。
+0.3.1新增就地截图工具条、细边/圆角候选识别与显示尺寸预览优化。旧版需下载更新并确认「安装并重启」才会启用新交互，仅检查更新不会替换正在运行的软件。
 
-## 安装开发预览版
+## 安装与更新
 
 Apple Silicon Mac（macOS 12+）：
 
@@ -32,7 +32,7 @@ Apple Silicon Mac（macOS 12+）：
 brew install --cask cpython666/tap/starshot
 ```
 
-Windows x64 安装包及 macOS DMG 见 [0.3.0 下载](https://github.com/cpython666/starshot/releases/tag/v0.3.0)。这是开发预览：macOS 尚未 Apple 公证，Windows 尚无发行者签名；不推送到应用内稳定更新通道。Windows 离线 OCR 模型合计约 12.2 MB，随安装包内置，主要识别拉丁文字和数字；macOS 使用系统 Vision，无需下载模型。
+Windows x64 安装包及 macOS DMG 见 [0.3.1 下载](https://github.com/cpython666/starshot/releases/tag/v0.3.1)。macOS 尚未 Apple 公证，Windows 尚无平台发行者签名；两平台更新包均有独立Tauri更新签名。Windows 离线 OCR 模型合计约 12.2 MB，随安装包内置，主要识别拉丁文字和数字；macOS 使用系统 Vision，无需下载模型。
 
 ## 运行
 

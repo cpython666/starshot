@@ -29,7 +29,7 @@
 - 新图最近会话最多6张、原图合计48MP；最多60个撤销步骤。预算不包含背景/临时渲染/快照，不代表进程硬内存上限。贴图最多12张。
 - 用户反馈菜单栏原图标难辨认（2026-10-26）。托盘不再复用带底板的应用图标：`public/tray-template.svg`生成36px黑色透明模板，macOS启用icon_as_template；`public/tray-contrast.svg`生成32px紫色/白边图标供Windows。源码接入desktop.rs，已有image依赖负责解码，无新增依赖。生成命令为 `npm run tauri -- icon public/tray-template.svg --output src-tauri/icons/tray-template --png 36`，另一份替换为tray-contrast和32。此修复自0.2.1引入；系统实机效果与设计预览分开记录。
 
-## 轻量截图改进（0.3.0之后的未发布源码）
+## 轻量截图改进（0.3.1已发布）
 
 - `finish_capture`接受可选action（edit/copy/save/pin，缺省edit兼容旧调用）及仅标注时传入的PNG；原生核对活跃窗口、矩形、实际PNG格式和精确裁切尺寸。保存取消返回completed=false保留选区；失败不关闭。quick成功更新current/已有main会话但不创建或唤起main，edit才唤起。
 - 每次捕获窗口使用唯一`capture-{id}-{index}`，旧请求/关闭事件不得影响后续捕获；取消只恢复捕获前原本可见的主窗。主窗原本隐藏时不等待180ms移除动画。保存/贴图使用已持有operation锁的内部helper，不能重入外层加锁命令。
@@ -44,7 +44,7 @@
 
 - `main.ts`按窗口动态加载界面；空白主窗关闭使用前后端握手，先锁前端输入再释放WebView。任何图片、异步导入、OCR、更新或退出工作均阻止释放；macOS Reopen重建主窗。已有编辑关闭主窗仍保留会话。
 - 退出请求总是向存活编辑器取最新状态，备份失败不得退出，备份成功后先flush最新原生状态再确认。安装器重启使用专用路径，不被普通退出门控拦截。
-- OCR只在用户点击后运行，输入为当前裁剪与已绘制对象；异步结果校验图片ID和编辑revision。Windows worker嵌入固定模型，标准输入/输出传图与结果、90秒超时、2线程，结束后释放进程。模型来源/哈希/独立许可见 `src-tauri/models/ocrs/NOTICE.md`。源码构建先运行 `npm run models:prepare`，固定字节数与SHA校验后写入Git忽略的模型路径；CI执行同一步骤，安装版仍完全内置离线模型。
+- OCR只在用户点击后运行，输入为当前裁剪与已绘制对象；异步结果校验图片ID和编辑revision。Windows worker嵌入固定模型，标准输入/输出传图与结果、90秒超时、2线程，结束后释放进程。模型来源/哈希/独立许可见 `src-tauri/models/ocrs/NOTICE.md`。源码构建先运行 `npm run models:prepare`，固定字节数与SHA校验后写入Git忽略的模型路径；CI执行同一步骤，安装版仍完全内置离线模型。0.3.1因原S3地址403改从独立`ocr-models-v1`预览Release下载原版镜像，原哈希及两模型合计12,226,852字节不变；该构建依赖不进入应用稳定更新通道。
 - `redact`使用不透明黑色，覆盖所有对象后再绘制；2×渲染后按物理像素floor/ceil补绘防止插值暴露边缘。零面积草稿不进入渲染或会话。候选预览框和选中辅助线不进入导出。
 - PNG贴纸单个2MiB/2MP，全会话按对象实例合计8MiB/8MP；导入、移动恢复和undo/redo均先校验预算。预解码缓存按当前会话及撤销/重做可达对象回收；拖动首次实际位移才创建撤销点。
 - 快捷键注册、OS开机启动和设置文件采用事务与回滚；插件autostart直通权限不开放给WebView。启动到托盘与开机启动分别保存/读取实际状态。
@@ -55,3 +55,5 @@
 浏览器可验证Canvas真实像素、裁切/取消/撤销、图片背景/边框和下载；不能据此宣称原生截图、录屏权限、置顶透显、快捷键和多屏通过。所有测试素材为原创，导出的截图与临时验证脚本放Git忽略的 `artifacts/`，可复用回归脚本放 `tests/`。
 
 `tests/browser-update-regression.mjs` 在已授权的Ego space/page运行原创像素与模拟IPC，覆盖备份/恢复失败保护、确认锁、固定安装版本和陈旧进度；脚本覆盖范围不等于已经执行通过，不能替代真实安装器验收。各版本构建和回归结果见 [验证记录](../../../../docs/verification.md)。
+
+`src-tauri/tests/macos-updater-smoke.rs`默认忽略，需`updater-smoke` feature及`STARSHOT_UPDATER_SMOKE_DIR`指定真实发行产物；以mock runtime驱动真实Tauri updater，仅替换临时应用副本，检查损坏包拒绝、旧包保留和新版codesign。`tests/windows-installer-smoke.ps1`以最终NSIS做隔离升级、固定像素OCR和卸载检查；两者均不等于原生GUI下载、自动重启与会话恢复全流程，0.3.1实际执行结果见验证记录。
