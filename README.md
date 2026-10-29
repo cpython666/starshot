@@ -13,12 +13,17 @@
 - 渐变、纯色、透明、本地图片背景；留白、圆角、边框、阴影；自适应、1:1、4:3、16:9、9:16画布。
 - 同一Canvas管线预览并导出PNG / JPEG，1× / 2×；原生保存对话框、复制图片、置顶贴图。
 - 贴图拖动、缩放、旋转、翻转、透明度、隐藏工具条；托盘和全局快捷键。
+- 未发布工作区新增：手动逐屏滚动长截图（本地去重拼接/预览）、贴图双击关闭及右键菜单、截图横竖辅助线（H切换）。2026-10-29已按用户授权安装到本机日用入口；公开0.3.1尚不包含这些改动。
+- 未发布悬浮预选修复：启动按实际鼠标位置预选、无标题窗口仍可命中、全屏框向内显示；macOS已有辅助功能授权时优先查询真实控件边界，未授权或查询失败保留窗口/像素候选。Windows控件识别及真实跨应用命中率仍待验收或实现；[调查依据](docs/snipaste-detection-research.md)。
+- 后续工作区细节（尚未安装）：贴图复制/另存为/送到编辑器，美化一键恢复默认且可撤销，帮助显示实际快捷键；macOS应用菜单和⌘Q复用退出前备份检查，Dock菜单退出仍待处理。[Starclip对照与后续清单](docs/product.md#对照星笺-starclip-的细节补齐2026-10-29)。
 - 星夜、月白、素白、青苔、暮樱外观和自定义配色；记住延时/导出选项，可保存不含图片的美化预设。最近图片平时仅保留在内存；手动、退出前选择备份或安装更新前可保存完整恢复点，并查看占用/删除。
 - 可配置全局热键、可选开机启动/启动到托盘、空白窗口释放后重新唤起、退出保护；产品介绍图与文案预览/保存/明确复制。
 
 - 设置内手动检查更新、下载并校验签名；完成后弹出「安装并重启」或「稍后安装」。确认安装时备份最新编辑会话与旧应用副本，安装成功后自动重启，支持恢复本机会话。
 
 源码仓库：[cpython666/starshot](https://github.com/cpython666/starshot)。版本同步与签名流程见 [发布指南](docs/releases.md)，[0.3.1 已公开](https://github.com/cpython666/starshot/releases/tag/v0.3.1)，Homebrew安装与验收边界见 [分发说明](docs/homebrew.md)；0.1.0需手动升级才能获得应用内更新。
+
+Windows控件识别及helper源码位于[`src-tauri/src/window_regions/windows.rs`](src-tauri/src/window_regions/windows.rs)，公共截图界面为[`CaptureOverlay.vue`](src/components/CaptureOverlay.vue)。原生验收源码包含[`desktop/windows_integration.rs`](src-tauri/src/desktop/windows_integration.rs)、[`windows_smoke.rs`](src-tauri/src/desktop/windows_smoke.rs)和`tests/windows-*.py/js/cs`，不以自制闭源DLL代替实现。构建、原创夹具及复现入口见[Windows v3记录](docs/windows-native-v3.md)；本地源码状态与公开版本须以各次验证记录区分。
 
 浏览器可以完整体验导入、原创示例区域选择、标注、美化与下载；浏览器中的截图为明确标示的原创示例，真正桌面截图及置顶贴图仅原生版提供。
 
@@ -40,7 +45,7 @@ Windows x64 安装包及 macOS DMG 见 [0.3.1 下载](https://github.com/cpython
 
 ```sh
 npm ci
-npm run models:prepare # 官方固定模型，构建时校验；安装版识别不联网
+npm run models:prepare # 仅构建 Windows 时需要；macOS 使用系统 Vision，无需模型
 npm run dev
 # 浏览器： http://127.0.0.1:1430
 npm run tauri dev
@@ -70,6 +75,6 @@ npm run tauri -- build --bundles nsis    # Windows
 
 星镜专注截图、标注、贴图与图片美化；用户已确认当前会话最近6张图片足够，不规划持久截图历史，长期剪贴板历史由星笺负责。
 
-当前仍缺少系统控件树语义识别、滚动长截图、独立全文OCR/Windows中文模型、跨屏连续选区、贴图分组、GIF等；不做可编辑项目文件导入导出。完整范围、限制和后续验收见 [产品说明](docs/product.md)。
+当前仍缺少系统控件树语义识别、长截图自动滚动与复杂页面支持、独立全文OCR/Windows中文模型、跨屏连续选区、贴图分组、GIF等；不做可编辑项目文件导入导出。首版手动长截图已在工作区实现，尚待原生矩阵验收。完整范围、限制和后续验收见 [产品说明](docs/product.md)，竞品资料与采用决策见 [截图交互研究](docs/screenshot-research.md)。
 
 交互研究参考 [Snipaste官网](https://www.snipaste.com/)（2026-10-26访问）；品牌、UI、图标、演示素材和实现独立制作。没有复用竞品代码、素材或产品名称。星镜不是已达到竞品全部功能的成品。

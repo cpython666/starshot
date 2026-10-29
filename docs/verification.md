@@ -196,3 +196,153 @@ Homebrew真实安装到仓库忽略的隔离目录；brew info的安装版本、
 - Homebrew最终Tap提交为[98abcab](https://github.com/cpython666/homebrew-tap/commit/98abcab34c228aa64d6e4faf68165b37a88c6bcb)。首次audit因默认livecheck将模型依赖标签读成版本1而失败；生成器与Cask改用github_latest后，Ruby/style/livecheck/在线严格audit/fetch均通过。独立目录实际安装版本与签名核对、卸载和清理登记均通过，未启动应用或移除quarantine，公开DMG缓存与上表一致。详情见[Homebrew指南](homebrew.md)。生成器调整后的本机Node、前端生产构建、Rust core和fmt再次通过；该调整不改变已发布应用二进制。
 
 仍未全部覆盖：应用GUI完整下载、安装后自动重启及会话恢复，Windows安装器启动失败后的旧版重启，多显示器/混合DPI、真实截图启动与各原生交互矩阵。macOS仍为ad-hoc且未Apple公证，Windows尚无平台发行者证书；更新签名及稳定latest发布不改变这些边界。
+
+## 2026-10-28 · 旧验收包安装前会话校验失败
+
+用户提供的安装确认截图显示0.3.1已下载验签，但报「恢复点内容无效：贴纸和遮挡区域尺寸必须大于零」。源码调用链为UpdateSettings.install先getSession，再调用原生monitor.install；getSession序列化当前及最近最多6张图片，session.ts对sticker/redact宽高≤0拒绝。因此此次阻塞在生成会话备份之前，原生安装未开始；不能据此前安装载荷测试通过推断用户旧会话已能升级。
+
+正式v0.3.0及v0.3.1均已有遮盖宽高同时大于2才提交、零面积草稿不渲染及反向拖动归一化。该保护所在提交为cd7a691（10月27日01:04），当时Starshot Verify二进制mtime为10月26日23:52，早于修复；这支持旧验收构建残留异常标注的判断，但未读取真实图片或用户对象尺寸，无法确认哪张图片、哪个对象及零或负值。初步排查阶段没有改代码或操作用户会话；后续处理如下。
+
+需要保留进度时应先稍后安装，确认异常对象后单独撤销/删除，并先验证备份成功；未经授权不能清空会话。旧前端在调用安装前已经失败，单纯发布新包不能热修复该进程。
+
+## 2026-10-28 · 空遮盖兼容修复与旧会话解阻（未发布源码补丁）
+
+- 用户明确回答「已经保存，当前会话可以清空」后，通过原生UI退出旧Verify并重开，确认空白工作台且错误消失。重新检查、下载和验签公开0.3.1，点击安装并重启后旧进程结束，新进程从原Verify.app路径启动；该包Info.plist已为0.3.1、com.starshot.desktop。操作工具当时仍把该路径绑定旧verify标识，对正式标识访问超时；进程采样主线程在正常AppKit事件等待，无死锁证据。用户随后明确确认「能看到，界面正常」，因此窗口正常已有用户实测反馈；这次只保存空会话，不能证明真实图片跨标识恢复成功。
+- 工作区`editor.ts`仅在原1000对象上限检查后，统一过滤有限坐标、非负尺寸且宽或高恰为0的旧`redact`，覆盖所有遮盖绘制阶段，避免输出floor/ceil把空框变成1px黑线。正面积小遮盖保留；负尺寸、非有限值、损坏贴纸继续拒绝。
+- 内部`serializeSession`对所有最近文档的标注副本做同一过滤，不修改运行状态及undo/redo；原2000对象/100000路径点限制仍先检查。外部`parseSession`与Rust恢复校验保持严格，不接收外部零尺寸对象。
+- `App.vue`独立记录`renderError`，重绘成功或图像为空时清除；保存/复制等操作失败仍保留，避免旧预览异常一直盖住后续状态。
+- Node54项为53通过、1项真实minisign因本机PATH缺工具跳过；Rust core18通过、desktop33通过（1项Windows引擎手动测试忽略），版本检查、前端生产构建、cargo check/fmt、diff检查通过。没有复用此前CI作为新补丁的双平台证据。
+- Chromium功能回归10组通过，包含新增8种裁剪/1×/2×/预览像素完全一致、旧空遮盖备份与undo/redo不改变有效对象、预览错误恢复且保留保存失败、空会话清除旧错误。更新/恢复模拟IPC回归7组也重新通过，覆盖备份失败保护、确认门控及最新会话采集；不替代原生安装验收。仅使用原创示例和生成像素；记录在忽略的artifacts/feature-qa/results.json、update-regression/results.json及empty-mask-*-browser.log。
+- 本地macOS app/DMG构建及严格codesign校验通过，仍用源码版本0.3.1；这个未发布构建不等于公开0.3.1。DMG为4,982,064字节，SHA-256 `e50857a3b4d620056beb010cf2c1099f24ec38293b0175242a22596835751e03`，日志artifacts/empty-mask-macos-build.log。未将本地补丁安装到用户应用，未提交、推送、创建新版本或覆盖公开发行资产；Windows新补丁构建未执行。
+
+## 2026-10-28 · 权限提示名称核对（未发布文案修复）
+
+- 用户反馈应用提示允许「星镜」，但系统搜索显示Starshot/Starshot Verify。正式包Info.plist的CFBundleName/CFBundleDisplayName均为Starshot；本次实际运行路径为target/release/bundle/macos/Starshot.app。原生系统设置「录屏与系统录音」列表实际显示Starshot.app且开关为on；应用内「重新检查截图权限」与重开后的检查仍报告不可用，不能将系统列表开关等同于当前程序已取得权限。具体授权不一致原因未确认，没有读取TCC数据库、重置权限或为测试截取桌面。
+- 工作区desktop.rs以同一CAPTURE_PERMISSION_HELP统一首次预检与截图失败的提示，DesktopSettings.vue备用文案同步，明确查找Starshot（星镜）。本次只修文案，不自动授予权限、不改变应用标识或更新公开发行包。用户开始操作系统设置后停止窗口操作，未替用户完成新授权；截图权限是否生效仍待实际预检或用户反馈。
+- 本机Node54项为53通过/1项minisign跳过，前端生产构建、Rust core18项、desktop33项（1项手动测试忽略）、cargo check/fmt和diff检查通过。macOS以独立名称Starshot Permission Preview与com.starshot.permission-preview构建app/DMG并通过严格codesign，避免打包覆盖当前正在使用的Starshot.app；未安装或运行该验收包。核验后仅移除本轮生成的临时app，避免增加同名搜索项，保留DMG（4,982,065字节、SHA-256 `35a90b6f8e32e4c422aef02a94851afc5444865ea06ef38b11e526a9bad7d592`）。日志在忽略的artifacts/permission-name-*.log。未执行Windows新构建，未新增模拟文本实现的测试。
+
+## 2026-10-29 · 清理重复应用并统一本机入口
+
+用户看到多个Starshot/Verify/Capture Preview后要求「旧的都删了」。清理前确认没有starshot运行进程，/Applications/Starshot.app尚不存在；索引共发现5个星镜app。最新工作区重新执行前端生产构建与macOS app打包，严格codesign校验通过，二进制包含新Starshot（星镜）权限提示；连同前轮空遮盖修复一起移到`/Applications/Starshot.app`。这是本地修复构建，版本仍为0.3.1，不能视作公开v0.3.1资产或新发行。主二进制SHA-256为`fd549585c1edfe7d9dc5da5e00955f525b8c93a932da9124c781837ac287186a`，移动后签名再次通过。
+
+以下4个旧副本通过Foundation FileManager.trashItem移到系统废纸篓，可恢复：target下Starshot Verify.app（外层旧验收名、内部为公开0.3.1）、Starshot Capture Preview.app（0.3.0）、artifacts内macos-updater-smoke/Starshot.app（0.3.0测试基线），以及旧Verify数据目录application-backups下0.3.0应用备份。只移除app包，恢复会话与图片目录未读取或修改；Starclip/星笺不在本次清理范围。
+
+旧路径逐一注销LaunchServices注册，固定入口重新注册和导入索引后，`mdfind`按Starshot.app名称查询仅返回`/Applications/Starshot.app`。原生UI实际打开正常，运行进程也来自该固定路径，设置中的版本为0.3.1；「重新检查截图权限」仍返回新的权限说明，故权限未通过，不曾为验证捕获真实桌面或代用户改变授权。返回工作台并保留运行。清理路径映射和构建日志仅位于忽略的artifacts/canonical-starshot-cleanup.json及canonical-starshot-build.log。没有提交、推送、发布或修改Homebrew。
+
+## 2026-10-29 · 录屏授权失配定位与修复
+
+用户再次反馈系统已开启权限但仍无法截图。针对星镜的系统tccd诊断确认：现有ScreenCapture授权保存的代码要求与`/Applications/Starshot.app`当前代码签名不匹配；`codesign`核对当前包为ad-hoc，指定要求绑定代码哈希。原生系统设置同时显示Starshot.app开关已开启。源码`desktop.rs::capture_permission`每次实时调用CoreGraphics，无前端或Rust权限缓存，拒绝发生在xcap读取屏幕前；此前「原因未确认」在本次排查中得到解决。原始系统日志未加入Git。
+
+用户明确回答「允许，修复星镜授权」后，确认应用为空会话并退出，仅执行`tccutil reset ScreenCapture com.starshot.desktop`，命令成功；系统设置中的旧Starshot条目消失。随后通过系统原生添加按钮选择应用程序目录的Starshot.app，条目恢复且开关开启，重新启动固定入口。应用内「重新检查截图权限」明确显示「截图权限已可用」，底部旧权限错误消失，已返回工作台。没有重置其他应用授权、修改TCC数据库或为验证截取真实桌面；本次确认权限预检通过，不宣称完成截图/复制/保存全流程。未更改代码、重新签名或发布；未来ad-hoc重建仍需留意授权身份变化，稳定平台签名属于后续发行事项。
+
+## 2026-10-29 · 长截图与贴图交互（未发布工作区）
+
+- 源码新增手动逐屏纵向长截图：选区内入口→小控制窗→用户滚动后主动采集→重叠去重与缩略预览→复制/保存/贴图/更多编辑。简单固定头尾、重复帧、歧义/无重叠拒绝、显示器配置变化、取消和失败保留均有明确路径；像素匹配是启发式，不宣称任意动态页面或复杂悬浮层正确。
+- 长图上限100屏、单边16384/40MP，首帧及追加提交前按真实PNG编码检查64MiB；超限保持图像、上一屏与屏数，避免已有长图无法完成。新增7个原创固定像素Rust测试，含精确拼接、固定头尾、稀疏文档、动态重叠拒绝、重复/反向/无重叠/尺寸变化/上限与编码预算回滚重试。
+- 贴图改为双击关闭并增加右键/Shift+F10菜单；macOS按下立即起拖，使用同屏幕坐标连续按下兜底双击；菜单不误触拖动/关闭，支持键盘、边界夹取、小窗滚动和关闭失败重试。截图辅助线为独立DOM横竖线，H显隐、随现有rAF更新，选区确定后隐藏，不参与成图。
+- Node54项：53通过、1项本机minisign缺失跳过；前端生产构建通过；Rust no-default25通过、desktop lib40通过/1项Windows专用测试忽略；cargo check、fmt与版本一致性检查通过。源码版本仍0.3.1，与公开发行包区分。
+- Ego Chromium串行回归最终通过：截图9组（含原有就地标注/撤销/裁切像素、辅助线、模拟IPC长截图开始失败/重复/重叠失败/保存取消/完成路由/380×300布局）；贴图5组（菜单/键盘/180×130布局/双击兜底/失败重试）。预览截图已人工查看。证据在Git忽略的`artifacts/capture-toolbar/`、`artifacts/pin-interactions/`；使用原创demo或生成像素、模拟原生命令，没有读取真实屏幕或剪贴板。浏览器前台焦点需串行使用，后台rAF暂停不作为产品性能结论。
+- 竞品研究基于QQ/Snipaste官方资料及明确降级的微信媒体转述，未运行或逆向竞品；REA skill已按用户授权安装，未安装分析引擎/MCP。来源与范围见[截图交互研究](screenshot-research.md)。
+- 本地macOS app/DMG构建与严格codesign校验通过，仍为ad-hoc、未公证。DMG为5,040,861字节，SHA-256 `aa73c2ffa0df356d6985079692fab1e458c651449bb73d9892828f23dd42d78b`；以明确未发布名称保存在`artifacts/scroll-interactions-20261029/`，同目录含app归档及`build-verification.json`。归档中的可执行文件哈希与构建app一致后，仅移除本轮生成的可运行app副本，避免重复搜索入口；日用应用未修改。构建日志`artifacts/scroll-interactions-macos-build.log`。
+- 本轮未执行Windows新构建，也未实测真实滚动页面、原生双击/拖动、控制窗隐藏后采集、多显示器/混合DPI。未提交、推送、发布或替换`/Applications/Starshot.app`，不能用旧0.3.1发行CI代替本轮证据。
+
+## 2026-10-29 · 悬浮预选修复与Snipaste REA调查（未发布工作区）
+
+- 用户反馈悬浮快捷选区框消失。代码检查发现xcap 0.9.8在macOS把可选窗口名称/共享状态当作窗口入选条件，以及全屏候选向外outline被stage裁切的路径；没有捕获用户真实桌面，因此不能把这些可复现代码缺陷说成已唯一确认其实际场景根因。macOS改为一次CoreGraphics几何快照，保留有效无标题窗口；前端边框向内、启动按实际指针预选，初次检测不依赖非活动屏的双rAF。
+- 新macOS AX点查询仅在已有辅助功能授权时启用，仅读位置/尺寸；捕获会话和宿主PID受后端约束，每个AX对象设置剩余80ms预算，未授权/超时/错误保留窗口/像素候选。前端最多一个在途请求，过期回复不覆盖新位置、Tab手选或确定后的选区。该路径是真实原生源码，但本轮没有执行跨应用AX或修改系统权限。
+- Node55项：54通过、1项本机minisign缺失跳过；Vue/TypeScript/Vite生产构建通过。Rust no-default30通过、desktop lib45通过/1项Windows专用测试忽略；cargo check、fmt及git diff --check通过。新增纯测试覆盖无标题几何快照条件、叠放过滤、初始指针缩放/负坐标、控件包含点/宿主夹取及权限门控，ACL检查覆盖新捕获命令。
+- Ego Chromium悬浮专项5组通过：初始指针/全屏内侧框；Worker构造及转移buffer后错误回退；迟到Worker和Shift+Tab松键；模拟控件优先/单请求/陈旧回复；Shift手动与静止点击。已有截图回归9组亦通过，覆盖就地标注、导出像素、辅助线、长截图模拟IPC与失败保留。新测试为`tests/browser-hover-regression.mjs`，结果`artifacts/hover-detection/browser-results.json`，全屏候选原创预览已查看。
+- 新`tests/macos-capture-webview-smoke.swift`在真实WKWebView用当前dist、现有CSP和`tauri://localhost`加载生产module Worker，6/6通过、stderr为空：实际指针、Worker构造失败/运行失败回退、模拟AX控件优先、迟到AX与Worker不覆盖Tab。另有探针确认同源module Worker可用，故没有加入blob Worker或放宽CSP。测试只有原创固定像素与模拟原生IPC，不等于真实屏幕捕获或控件命中率验收；日志`artifacts/hover-detection/macos-capture-webview-smoke.jsonl`。
+- 按用户要求实际使用REA CLI 6.7.0的Mach-O/plist检查，并以系统otool只读反汇编补充核对本机Snipaste 2.9.2 arm64窗口→AX元素→位置/尺寸→宿主求交调用链。深度反编译返回provider_unavailable，没有安装分析引擎、改MCP配置或运行竞品；不声称完整还原其算法。版本、文件哈希、Evidence和地址关系见[调查报告](snipaste-detection-research.md)，原始证据仅在忽略的artifacts中。
+- 最终macOS arm64 app/DMG构建、codesign严格校验与DMG校验和验证通过，版本仍0.3.1、ad-hoc且未公证。DMG 5,049,770字节，SHA-256 `10562e97c5bbfb0d962a71cec39ed33d25404896bab13d99b5e0b842f92ffba1`；app可执行文件SHA-256 `75ce3c32a7c649c4f9fd44a231f9c34a8551b29e3d3486c38d748ec8476df73d`。明确未发布名称的DMG/app归档、构建日志与`build-verification.json`保存于`artifacts/hover-detection/`；核对归档可执行文件哈希后移除本轮生成的可运行app副本，避免新增搜索入口。
+- 日用`/Applications/Starshot.app`可执行文件哈希仍为`fd549585c1edfe7d9dc5da5e00955f525b8c93a932da9124c781837ac287186a`，未替换、启动测试副本或重置权限。未提交、推送或发布；Windows本轮构建/UI Automation、真实跨应用AX、多显示器/混合DPI和真实捕获全流程仍待验收，旧版CI不能代替。
+
+## 2026-10-29 · 用户授权安装最新本地构建
+
+- 用户要求「替换下，我要体验最新版的」后，将上一节已核验的app归档安装到`/Applications/Starshot.app`。解包前核对归档SHA-256，替换前保留旧app归档并核对其中可执行文件；安装后再次校验可执行文件SHA-256为`75ce3c32a7c649c4f9fd44a231f9c34a8551b29e3d3486c38d748ec8476df73d`、严格codesign通过，并核实新进程来自固定路径。版本仍0.3.1，本地补丁未公开发行。
+- 新应用已原生打开，设置页可见新增的控件预选权限提示。初次录屏预检拒绝、辅助功能未授权；用户随后明确同意「允许修复录屏权限并开启辅助功能」，并自行完成系统解锁。仅重置`ScreenCapture com.starshot.desktop`，在系统界面重新添加固定app；辅助功能仅重新登记该app。新进程内「重新检查截图权限」返回「截图权限已可用」，同页显示「精准控件预选已可用」，随后返回工作台留待用户体验。没有捕获真实屏幕、读取剪贴板或执行跨应用控件命中测试。
+- 旧应用备份与安装记录在忽略的`artifacts/hover-detection/installation-20261029-124911/`，临时可运行旧副本已在核对归档后移除。系统设置一度缓存旧临时文件名previous.app；权限有效性最终以固定路径新进程的原生API预检为准，不把界面开关单独作为证据。
+- 本次未先手动备份图片会话：退出前主窗显示一张图片，Cmd+Q直接退出且未显示备份提示；新版为空会话、恢复点列表为空。保留的是旧程序归档，不包含那张内存图片。已向用户说明，后续替换须先手动备份并核实成功。只读核对当前锁定依赖发现默认macOS Quit由muda的terminate:经Tao WillTerminate/LoopDestroyed到RunEvent::Exit，绕过项目仅监听ExitRequested的备份门控；未运行跟踪旧二进制，不能将匹配的源码调用链说成已唯一证明本次事故根因。此问题列为高优先级待修，应用菜单应复用begin_exit并另验Dock Quit。没有宣称完整编辑会话迁移或恢复通过。
+- 本轮没有修改产品代码、重建、提交、推送或发布，复用上一节已验证构建。Windows UIA仅核实官方实现路线，尚未写入Windows分支；其平台构建和原生验收仍待后续工作。
+
+
+## 2026-10-29 · 对照Starclip补齐操作细节（未安装工作区）
+
+- 只读核对本地Starclip源码后，补齐星镜实际快捷键提示、可撤销的「恢复默认美化」、贴图复制/另存为/送到编辑器。Starclip的图片OCR仍未实现，独立全文提取、快捷键录制、HEX输入、最近6张键盘选择和恢复点定位明确列为后续项，未改动Starclip及其用户数据。具体来源见产品说明的Starclip对照表。
+- 默认美化重置保留原图、裁剪和标注，清除背景图片和自定义装饰；一次撤销可完整恢复。生成双色PNG及背景的浏览器回归验证重置/撤销/重做的完整输出像素SHA-256一致，迟到背景导入不覆盖重置；初始、保存成功、保存失败回读后的顶部和帮助提示均跟随实际快捷键。这6组测试通过，证据为忽略目录`artifacts/starclip-details-20261029/browser-results.json`；模拟IPC不等于系统热键注册实测。
+- 贴图8组Chromium回归通过：沿用原菜单/小窗/双击/失败重试，并增加复制方向参数、预览缩放/透明度不改变输出请求、保存取消/失败/真实路径、在途请求防重入和送编辑器保留贴图。Rust原创2×3不同RGBA像素测试覆盖所有90°旋转/水平翻转组合、尺寸及alpha、非法角度；实际变换在Rust执行。结果在`artifacts/pin-interactions/results.json`，预览图片已查看；未读真实剪贴板、未实测原生复制或保存对话框。
+- 进一步审查发现原先仅发capture-complete事件会在编辑器同时进入备份时被忽略，却返回发送成功。工作区现改为单待处理贴图请求、一次领取、实际导入后回执；窗口创建失败、忙碌、解码失败、超时或被新导入取代均拒绝且保留贴图，等待不占用operation锁且不写普通截图current。新增5组浏览器回归通过（细节脚本共11组），Rust验证重复领取、旧ID、失败清理及迟到回执；更新/恢复7组模拟IPC回归亦通过。
+- 最终Node55项为54通过、1项真实minisign因本机PATH缺工具跳过；Rust no-default31通过、desktop lib47通过/1项Windows手动测试忽略；Vue/TypeScript生产构建、cargo check/fmt、版本一致性及diff检查通过。这里只记录本轮重新执行结果。
+- macOS应用菜单使用普通MenuItem接管⌘Q并复用begin_exit，保留File/Edit/View/Window/Help菜单。独立标识`com.starshot.details-verify-20261029`的原生应用载入内置原创1200×750示例后，⌘Q实际显示「退出前保留编辑进度？」；取消回到完整示例，再次⌘Q选择备份并退出，进程结束，独立数据目录产生schema2恢复点且session SHA-256与清单一致。证据`artifacts/starclip-details-20261029/native-quit-results.json`记录对应构建哈希；没有运行真实屏幕捕获。Dock菜单退出尚未接管，不把该路径算作通过。
+- 最终macOS arm64 app/DMG构建、严格codesign和DMG校验通过，仍为ad-hoc、未公证。独立验证包DMG为5,081,290字节，SHA-256 `010fbda722ad7f1b835434eb34283946dae38939cc1c3cad7e122ababc185def`；可执行文件SHA-256 `0aa8821536c4bcb5241b2da89436ce4bb6267b35c1f0ed4c276e70db43cc00b4`。产物、app归档及build-verification.json保存在忽略目录`artifacts/starclip-details-20261029/`，核对归档后仅移除本轮生成的可运行验证app，避免增加重复搜索入口。
+- 最终原生验证另从内置示例生成1344×894美化贴图，按R旋转后用⌘E发送，主编辑器实际显示894×1344新图。再次验证⌘Q提示、取消保留、备份并退出，恢复点包含原始1200×750示例和894×1344贴图，清单SHA-256一致；证据native-final-results.json。这里只验证作为新图片导入，不还原贴图生成前的标注对象；没有实测原生复制、另存为或真实屏幕截图。
+- 日用`/Applications/Starshot.app`保持运行，本轮未替换、重启或修改其权限；本轮功能尚未安装。未提交、推送、发布或变更Homebrew，源码版本仍0.3.1。本轮Windows构建与原生GUI未执行，不复用旧发行CI作为新代码证据。
+
+
+## 2026-10-29 · Windows同伴调查包复核与集成交接
+
+- 用户交付`starshot-windows-investigation.zip`，SHA-256 `53f51c44b2e8063765b32d465bce230e8c91a22b3b6dd9e694c1657ab1ba778b`，25个清单文件的哈希全部核对一致；原始包内容留在忽略目录`artifacts/windows-investigation-20261029/`。没有在macOS执行Windows脚本或重跑其窗口测试，没有把原始日志、个人路径、截图或竞品二进制加入Git。
+- 两项独立离线复核：1008条探针记录与42个helper组合完整，四边误差、216次可访问控件零误差、B/C覆盖层命中及耗时统计均与原始数据一致；8段静态摘录长度/节偏移与10个RIP相对目标一致，MSAA接口槽位与官方头文件吻合。完整EXE不在包内，因此无法在本机重新验证整个Snipaste原文件哈希及摘录归属；这是同伴静态证据的一致性核对，不能称为Snipaste运行实测。
+- 216次结果来自两屏共12个固定控件位置的场景重复；全局UIA在不透明覆盖层上命中自身，保存目标HWND的局部查询可取得底层控件。普通Win32不能给无子HWND的WPF按钮返回独立矩形；无provider的自绘矩形仍只返回面板。150ms预算是合作式检查，最长158.17ms；未做阻塞provider故障注入。真实Tauri/WebView2、带文字/重叠候选、滚动和重建失效、硬超时恢复仍待测试。详细证据见[Snipaste调查](snipaste-detection-research.md#windows同伴交付与离线复核2026-10-29)。
+- 本轮只更新调查结论与接入边界；星镜Windows控件识别仍返回不可用，未把探针冒充产品实现。已核实接入缺口为原生HWND保留及operation锁外的受限查询；准备包含当前未提交代码的独立源码快照与Windows实现/验收任务，用于用户手动转交，未提交、推送、安装或发布。
+
+
+## 2026-10-29 · 平台依赖与资源裁剪（未发布工作区）
+
+- 用户确认不同平台仅编译和打包对应特性。现有macOS AX/Vision及Windows OCR worker原本已有条件编译，Mac生产包本来不含Windows worker或12,226,852字节模型；源码快照和Cargo.lock包含两平台信息不等于安装包包含两套实现。
+- 本轮将ocrs/rten移到Cargo的Windows目标依赖，将offline/worker及其模型测试限制为Windows；Windows保留模型SHA-256、原创像素识别和最终exe worker测试，Mac不再为测试额外编译Windows引擎。三份模型许可/说明（合计25,085字节）移入`tauri.windows.conf.json`，Mac不再附带；CI的模型下载只在Windows desktop job执行，Ubuntu校验及Mac无需下载。
+- 两平台`cargo tree --locked --offline -e normal`实际解析：Mac树无ocrs/rten系列，保留objc2-vision；Windows树保留ocrs/rten，无objc2系列。这里是目标依赖图验证，不是本轮Windows编译或打包。GitHub工作流YAML语法检查通过；没有推送/触发CI。
+- 本机Node55项为54通过/1项minisign缺工具跳过，前端构建通过；Rust core31通过、desktop46通过/0忽略，cargo check/fmt、版本及diff检查通过。相对前轮47通过/1忽略的减少来自Windows模型测试改由Windows执行，不是删除这些测试。
+- 独立`Starshot Platform Verify` / `com.starshot.platform-verify-20261029`的macOS arm64 app/DMG构建、严格codesign及DMG校验通过，未启动或安装。实际app Resources只含`icon.icns`，无模型许可或.exe/.dll/.rten文件；产物继续ad-hoc签名、未公证。DMG 5,051,406字节，SHA-256 `8ad9dbee2cbf2f6ae66719e679108be3ec0daee707e4905f9037c5749267d7d6`；可执行文件SHA-256 `ae9dc8f120da881d7fc9c8f416903b62f73575083ea3ca2455b93c5c60475c2c`。日志、依赖图、app归档和build-verification.json位于忽略的`artifacts/platform-packaging-20261029/`；归档核验后移除本轮生成的可运行副本。
+- 日用应用未替换，哈希仍为`75ce3c32a7c649c4f9fd44a231f9c34a8551b29e3d3486c38d748ec8476df73d`。本轮未新增界面行为，未重复原生截图/交互测试；Windows新配置的实际资源与构建由同伴后续验收。源码交接包另生成v2，保留旧快照以便区分基线；未提交、推送、发布或安装。
+
+## 2026-10-29 · 贴图焦点光圈（未发布工作区）
+
+- 根据用户提供的Snipaste参考图实现默认开启的活跃蓝色/失焦灰色光圈。设置页和右键菜单共用本机持久开关，旧设置缺字段默认开启；关闭不改变图片位置或尺寸。原生窗口四周增加12逻辑像素透明空间，光圈框住旋转后的实际图片矩形，不进入原始图片导出。原生焦点与透明度通知均限定当前窗口，光圈偏好向所有贴图同步。
+- 浏览器贴图回归13组通过，涵盖原有菜单/输出行为、默认开启、目标窗口焦点隔离、关闭后重载记忆、保存失败保留、全局同步、小窗四种旋转和边距，以及监听注册期间/初始请求期间的事件先后顺序。使用原创固定像素和模拟IPC，已查看活跃/失焦预览；不能当作原生截图或Windows验收。
+- 设置与编辑回归13组通过，新增迟到get/set设置响应不能覆盖较新光圈事件，且事件不改快捷键草稿。回归还发现原有设置对象通过emit共享给主页面，导致未保存草稿提前修改已生效快捷键提示；现改为仅复制两个快捷键字符串，修复后全部通过。上述结果及图片复制到`artifacts/pin-halo-20261029/`，与之前验证批次区分。
+- Node55项为54通过、1项minisign因缺工具跳过；Rust no-default31通过、desktop lib47通过；Vue/TypeScript生产构建、cargo check/fmt、版本一致性和diff检查通过。
+- 独立`Starshot Halo Verify` / `com.starshot.halo-verify-20261029`原生应用载入内置原创示例，检查新贴图可访问状态为「活跃」、菜单关闭写入pinHalo=false、设置页读取关闭状态、第二张贴图继承关闭，以及重新开启后已有贴图同步。只读AX与该验证应用设置文件，没有捕获真实桌面或读取剪贴板。原生失焦视觉效果、跨应用切换、混合DPI、Windows原生仍待验收。此轮AX未取得退出提示文字，Escape可取消，故不新增退出对话框验收结论；最终只终止独立测试实例。
+- 原生检查对应二进制SHA-256为`e7380d72a42ff391431c2a8279f6902801cad5fcbe6d5d8d45f6404ec41f8a07`；随后仅补快捷键字符串独立快照修正，并通过相关浏览器回归。最终macOS arm64 app重新构建、严格codesign与归档内二进制校验通过，未重复启动，仍为ad-hoc、未公证；最终二进制SHA-256为`568786507f80469cb3a4302bd17be27335d41bf5df8cd17e131e563be5d9a4e5`。app归档、构建日志、native-verification.json与build-verification.json保存在`artifacts/pin-halo-20261029/`，归档后移除可运行验证副本，避免重复入口。
+- 日用应用PID和二进制哈希保持不变；这批代码未安装、未提交、未推送或发布，版本仍为0.3.1。没有把既有Windows调查或旧发行构建当作本轮Windows验证。
+
+## 2026-10-29 · 贴图与截图悬浮提示（未发布工作区）
+
+- 按用户提供的Snipaste悬浮说明参考图，补齐贴图图片区多行title及可访问说明，涵盖双击关闭、拖动、滚轮、修饰键透明度、右键菜单、空格和光圈设置入口。工具栏与右键菜单补充准确的重置动作、穿透恢复方法和全局光圈偏好说明；截图工具条补重做、复制快捷键及贴图后的操作提示。未新增自定义浮层、计时器、双击设置或导出处理。
+- 独立复核文案与现有handler一致：Mac透明度支持⌘或Ctrl，Windows提示Ctrl；重做为⌘/Ctrl+Shift+Z，复制支持Enter与⌘/Ctrl+C；光圈和托盘恢复入口均已存在。双击行为目前不可配置，未照抄竞品的设置路径。
+- Node55项为54通过/1项minisign缺工具跳过；Rust no-default31通过、desktop lib47通过；前端生产构建、cargo check/fmt、版本及diff检查通过。本轮为低影响提示属性修改，未新增只匹配文案的测试，也未把前轮浏览器回归算作本轮重新执行。
+- 独立`Starshot Hint Verify` / `com.starshot.hint-verify-20261029`的macOS arm64 app构建、严格codesign与归档内二进制校验通过，未启动、未安装，仍为ad-hoc、未公证。最终二进制SHA-256为`22d32fd0b6e4485a5151f29d3705b8c428fd98aad29c1953eac49eef55abb515`。归档及build-verification.json保存在`artifacts/hover-hints-20261029/`，归档后移除本轮可运行验证副本。
+- 原生悬浮气泡的出现时机、换行及双平台实际显示未在本轮实测；这里确认的是title/可访问属性接入和构建，不能等同原生视觉验收。日用应用PID及哈希保持不变；未截图、未读剪贴板、未提交、推送、发布或替换应用。
+
+## 2026-10-29 · Windows选区v2交付合入与本机回归（未发布工作区）
+
+- 用户交付`starshot-selection-rules-v2.zip`，SHA-256 `2615cdebedca3478e0b831d36736620c964d1580aa0710cf75ba34c701dd0796`；14个文件、清单中13个内容文件的哈希均匹配。累计补丁基于第一版116文件源码交接包，早于本机平台分包/光圈/提示修订。重建基线与候选后逐文件三方合并，保留后续本机改动，Windows依赖并入既有target表，没有覆盖整个工作区。
+- 合入Windows目标HWND局部UIA、可终止helper、代数取消和会话复核；公共候选改为严格包含的父级路径，Tab向外、Shift+Tab返回、两端停止，并在首次Tab冻结路径。合入时另修复±2px去重吞掉精确窗口/全屏、全屏候选带入Frame字段，以及Shift事件遇排队鼠标移动的竞态。Windows全局槽忙时由直接返回改为最多250ms有界等待，保持5ms取消轮询、单helper和其750ms运行期限；新增3个Windows专用槽争用测试，Mac不能执行这些测试。
+- 同伴v2的46/46已从原始数据复算，含两屏各23个断言、20次固定语义位置零边误差；这是原Windows开发二进制的原创夹具结果，非46个真实应用，也非本机修订版的Windows原生验收。真实WebView2/UIA但手工构造Frame/单宿主，逐屏运行；未经过生产begin_capture/窗口枚举/同时双屏，recovery重启了probe父进程。Snipaste静态摘录只做内部一致性复核，未执行目标；边界与来源见[Windows集成](windows-uia-integration.md)和[选区规则](snipaste-selection-rules.md)。
+- 最终Node59项：58通过、1项minisign缺工具跳过；Rust no-default31通过、desktop lib47通过；Vue/TypeScript生产构建、cargo check、cargo fmt通过。新几何用例包含近似宿主/全屏保留及带额外Frame字段的全屏候选。日志仅在忽略的`artifacts/windows-selection-rules-v2-20261029/`。
+- Ego Chromium悬浮8组与截图9组通过。新增非指针屏不查询、迟到候选下固定双向层级路径/端点、排队同像素事件与Shift+Tab回归；原有就地标注/导出像素、辅助线和长截图模拟IPC继续通过。首次回归捕获全屏Region多余字段问题，修复后完整重跑通过，没有降低断言。测试只使用原创固定像素和模拟IPC。
+- 最终dist在真实WKWebView复跑6/6，stderr为空：module Worker、构造失败/运行失败回退、模拟原生控件优先、迟到控件及Worker不覆盖Tab。脚本适配新的invalidate命令与候选数组，仍不是macOS AX、真实屏幕或Windows原生实测。
+- 两目标离线依赖图验证：macOS不含windows/ocrs/rten而含objc2-vision，Windows包含前者而无objc2-vision；仅图解析不等于Windows编译。本机仅安装aarch64-apple-darwin目标，未安装工具链或执行Windows程序。
+- 独立`Starshot Selection Verify` / `com.starshot.selection-verify-20261029`的macOS arm64 app构建、严格codesign与归档内二进制校验通过；未启动/安装，ad-hoc且未公证。二进制SHA-256 `6756845198da7e0e569bb176b58c56406a3b8992fa2ef634107198cdb46772e4`；Resources只有icon.icns。归档`Starshot-selection-verify-0.3.1-unreleased-20261029.app.tar.gz`为4,981,240字节，SHA-256 `2588be7ad0e969616495e408485ffd212abe3148c2ec4cdffd3a4baf2b85f694`，核验后移除本轮可运行验证副本，避免新增重复入口。
+- 日用`/Applications/Starshot.app`二进制哈希仍为`75ce3c32a7c649c4f9fd44a231f9c34a8551b29e3d3486c38d748ec8476df73d`，未替换、重启或改权限；源码版本仍0.3.1，未提交、推送或发布。Windows同进程故障恢复、同时双屏槽交接、生产窗口快照和合入后平台构建须后续复测；真实跨应用、跨PID provider与高权限/自绘界面仍是明确限制。
+
+
+## 2026-10-29 · Windows v3生产初始化、同进程恢复与release/NSIS（同伴执行）
+
+- 基于Mac回传的starshot-selection-integrated-v3-20261029独立目录工作，126文件哈希一致。新增只在验收feature编译的生产begin_capture固定像素入口、真实IPC采样与同进程诊断，修复同坐标重新进入覆盖层不重新查询及离屏遗留rAF事件；未修改同PID限制和250/750ms预算。
+- 最终原生旧矩阵46/46、新矩阵19/19；新矩阵同一Tauri父进程PID46728完成20次双屏静止启动、普通/150ms延迟回收注入各20轮跨屏、各10次超时/取消后健康查询，以及窗口遮挡与句柄重建。186次物理移动校对、48次原创像素替换，helper峰值1且结束后0。恢复组直接调用同一父进程内的生产UIA执行层；不冒称每次恢复均经前端触发。详见[完整方法与边界](windows-native-v3.md)。
+- 最终Node59项：58通过/1项minisign缺失跳过；Rust core31/desktop50通过；Windows槽争用筛选4/4（含3个新增案例）；前端/版本/cargo check/fmt通过。存在原有unused path及兼容element_at警告。原生性能检查与构建串行运行。
+- 验收dev exe SHA-256为7047e398145f4deaac909d6582b6e32e8a2c49fa66df6e490d5887236cd71194；普通Windows x64 release exe为0114a174d5c72a9ab7d1fba0b88c345be042a10ce441cf448976a9eacc9c2c2a。NSIS为Starshot_0.3.1_x64-setup.exe，16469536字节，SHA-256 b5a8c681864f87154d09148eeff2b1fc98970aa17147d5f2901d2318c2a1f2d5。只构建，不运行安装器；Tauri打包器恢复了NSIS3.13和tauri-utils0.5.3的便携构建缓存，未安装系统工具或应用。
+- 普通release运行三个验收CLI参数均返回64，发生于应用初始化前；编译条件/普通handler及二进制诊断标记检查确认测试实现排除。两份OCR模型完整字节在exe内，生成的NSIS脚本包含NOTICE和两份许可证；Windows目标依赖图含ocrs/rten且无objc2-vision/objc2-foundation。未实测安装、升级、卸载或正式UI中的测试IPC调用。
+- 首次静止点在较早批次读到与测试预设不同的坐标，失败保留；测试改用物理坐标并补齐移动后和Frame读取时的DPI/指针记录，最终20/20通过，不宣称统一解决所有历史无框问题。驱动互等/只读invoke拦截/文件共享失败单列，不计通过。Mac公共Vue回归、真实跨应用/跨PID/高权限/自绘provider、负Y/旋转/热插拔和长期稳定性仍未验证。
+- 未截取真实桌面、读剪贴板、改权限、安装日用应用、提交、推送或发布。源码仍0.3.1未发布，交付仅相对v3的增量补丁和精简证据；本机完整日志留在忽略的artifacts。
+
+## 2026-10-29 · Windows v3接回、源码完整性与本机收尾
+
+- 接回`starshot-windows-selection-v3-result.zip`（71,750字节，SHA-256 `6ac5de3bf88040a9bd28d70c3af020edaed6d61d9d0fcb93af39df9fde8a3c65`）。8个文件、清单7项哈希匹配；17个变更文件的before哈希全部与当前工作区一致，备份后直接应用增量补丁，after哈希逐文件通过，没有覆盖已有本机改动。
+- 离线复核原始记录：旧矩阵两屏各23项共46项，新矩阵19项；199条控制命令和726条helper事件均为同一父PID，样本数、矩形、指针及spawn/reap记录吻合。147次前端查询加40次恢复直调共187次查询。接回审查未发现阻碍合入的问题，本轮收尾，不再要求用户转发第四轮。真实像素采集、复杂真实应用和长期稳定性仍按既有边界记录。
+- 合入后本机Node59项为58通过/1项minisign缺失跳过，Rust core31/desktop47通过；前端构建、版本、cargo check/fmt与diff检查通过。真实WKWebView载入最终dist，6/6通过、stderr为空；仍使用原创像素与模拟IPC，不当作macOS真实AX或屏幕捕获验收。Windows原生结果来自同伴执行，本机没有运行Windows程序。
+- 用户明确要求Windows实现及交接验收保留源码。核查130个源码/资源文件，UIA/helper、生产截图、Rust验收入口、Python/JavaScript驱动、C#原创夹具及构建配置均齐全，没有自制DLL/EXE/LIB/PDB作为源码替代。首次源码包126文件，v3增加4个源码/文档文件；当前完整快照另存本轮忽略的artifacts，含逐文件SHA清单。
+- 只读查询公开GitHub：main仍为`c69c87aed506c015ddf267e0d4aa22ea8ec47c30`，与本地HEAD一致；新Windows实现及本轮其他功能尚未提交/推送，不能称已在公开仓库开放。本地源码、交接快照与公开发行状态分别记录；README列出实现和验收源码入口。
+- 本轮所有日志、输入包和源码审计位于`artifacts/windows-selection-v3-result-20261029/`。未安装、重启日用应用、改变权限、读取剪贴板或捕获真实桌面。
+- 最终独立`Starshot V3 Verify` / `com.starshot.v3-verify-20261029`的macOS arm64 app构建、严格codesign及归档二进制校验通过，未启动/安装，ad-hoc且未公证。二进制SHA-256 `ee87cef6d126a84775a8ab56e31e772cfc82411c962bee7a69874dcef44ba8f7`；Resources仅icon.icns。归档4,981,324字节，SHA-256 `8017f12c4a0bd9f273d15a6f9b81a942ff0cb418ac042989b4867de62952e09b`；核验后移除本轮可运行副本。日用应用PID87441及二进制哈希保持不变。

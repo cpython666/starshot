@@ -37,7 +37,7 @@ npm run version:check -- v0.3.1
 - `release-manifest.mjs`：要求完整且唯一的平台产物，真实验签并核对版本绑定，然后生成 latest.json、SHA256SUMS 和发布说明。
 - 流程只创建/更新 Release 草稿，不自动公开；拒绝覆盖已发布的同版本 Release 及已有草稿资产。已有资产的草稿需要重跑时，先人工检查并删除旧草稿，流程不会覆盖文件。
 
-构建模型由 `scripts/prepare-ocr-models.mjs` 下载。2026-10-28上游原地址返回403，现从独立的 `ocr-models-v1` 构建依赖Release获取已核验的原版副本；大小、SHA-256与0.3.0内置模型完全一致，保留作者、原始来源与CC-BY-SA-4.0许可。该Release标为prerelease，不进入应用稳定更新通道；不要将模型二进制加入Git或改成运行时下载。
+Windows构建模型由 `scripts/prepare-ocr-models.mjs` 下载；macOS使用系统Vision，构建/测试不需要下载这些模型。Windows专用依赖由Cargo目标配置选择，模型许可资源只在`tauri.windows.conf.json`中声明，Mac包不附带。2026-10-28上游原地址返回403，现从独立的 `ocr-models-v1` 构建依赖Release获取已核验的原版副本；大小、SHA-256与0.3.0内置模型完全一致，保留作者、原始来源与CC-BY-SA-4.0许可。该Release标为prerelease，不进入应用稳定更新通道；不要将模型二进制加入Git或改成运行时下载。
 
 0.3.1的Windows CI先校验并安装公开0.3.0，再用最终NSIS执行隔离升级，检查版本、卸载登记、固定像素OCR与卸载清理。macOS可在本机运行下列默认忽略的测试：目录中放公开0.3.0的 `Starshot.app`、候选版 `latest.json` 和对应已签名 `.app.tar.gz`，测试仅替换临时副本，并检查损坏包被拒绝、旧包不变和新版签名完整性。两项均不等同于应用GUI的下载、重启及会话恢复验收。
 
@@ -64,7 +64,9 @@ Tauri 更新签名与平台代码签名不是同一件事。目前 macOS 默认 
 
 [v0.3.1](https://github.com/cpython666/starshot/releases/tag/v0.3.1)于2026-10-28 12:15:48 UTC公开，源码标签为 `fe609e8`，`draft=false`、`prerelease=false`，已设为latest。普通验证40681522684与签名发行40683246836全部通过；公开稳定清单与CI最终文件逐字节一致，运行中的0.3.0原生应用实际显示发现0.3.1。Homebrew Tap已同步到 `98abcab`，在线审查、下载及隔离安装/卸载通过。
 
-Windows实际升级与macOS临时副本更新安装已验证；应用GUI完整下载/重启/会话恢复、混合DPI及全部原生交互仍未全部验收。独立验收包 `com.starshot.verify-030` 与正式包使用不同数据目录，更新前应保存当前编辑，不能假定旧验收恢复点自动出现在正式包内；本次只在该运行中的验收包内检查更新，未替换或重启它。具体包哈希与验收记录见[验证记录](verification.md)。
+Windows实际安装器升级与macOS临时副本更新安装已验证。随后在用户确认当前编辑已保存、可清空后，旧Verify空会话完成了原生GUI下载、验签、安装及自动重启，用户确认界面正常。真实图片会话恢复、Windows GUI完整更新与失败后重启、混合DPI及全部原生交互仍未全部验收。独立验收包 `com.starshot.verify-030` 与正式包使用不同数据目录，不能假定旧验收恢复点自动迁移。具体包哈希与验收记录见[验证记录](verification.md)。
+
+2026-10-29本机入口统一为`/Applications/Starshot.app`，仍标0.3.1，但含尚未公开的空遮盖兼容与权限提示补丁；它与上述公开发行包不同。随后确认旧录屏授权与新ad-hoc代码身份不匹配，按用户授权仅重置星镜并重新登记后，原生权限预检通过；尚未实际截图验收。后续补丁分发、双平台验证、稳定平台签名及临时副本管理见[本机修复版与待办](../.agents/skills/starshot/references/releases.md#本机修复版与后续待办2026-10-29)。
 
 ## 历史：0.3.0 Homebrew开发预览
 
