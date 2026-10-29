@@ -38,7 +38,7 @@ REA 还观察到下列符号：`detectRectInternal`、`findNextLevelRectByNeighb
 
 ## 对星镜的启发与尚未回答的问题
 
-调查前星镜采用xcap窗口边界加截图像素边缘候选，和上述AX控件定位是不同证据层级。仅调边缘阈值不能保证获得同样的系统控件边界。本轮星镜独立实现了macOS CoreGraphics几何快照，以及已有授权下的AX点查询：仅取位置/尺寸，检查包含点并与宿主窗口求交；失败保留窗口/像素候选，过期异步结果不能覆盖新位置或Tab手选。实现入口为`src-tauri/src/window_regions.rs`、`desktop.rs::get_capture_element`和`CaptureOverlay.vue`。没有复制竞品代码，亦未实现上述递归子元素备用分支。此macOS调查阶段尚未实现Windows UIA；同日后续已接入Windows v2源码，见[Windows集成记录](windows-uia-integration.md)。真实跨应用命中率、生产多屏流程与合入版Windows原生补测仍未完成，见[验证记录](verification.md)。
+调查前星镜采用xcap窗口边界加截图像素边缘候选，和上述AX控件定位是不同证据层级。仅调边缘阈值不能保证获得同样的系统控件边界。本轮星镜独立实现了macOS CoreGraphics几何快照，以及已有授权下的AX点查询：仅取位置/尺寸，检查包含点并与宿主窗口求交；失败保留窗口/像素候选，过期异步结果不能覆盖新位置或Tab手选。实现入口为`src-tauri/src/window_regions.rs`、`desktop.rs::get_capture_element`和`CaptureOverlay.vue`。没有复制竞品代码；调查当时未实现递归备用分支。同日后续用户确认内部面板增强后，星镜独立加入有界AX父链和宿主局部子树查询，具体预算、回退和验收见[实现记录](../.agents/skills/starshot/references/implementation.md#2026-10-29未发布悬浮预选修复)，不能据此声称与竞品算法相同。此macOS调查阶段尚未实现Windows UIA；同日后续已接入Windows v2源码，见[Windows集成记录](windows-uia-integration.md)。真实跨应用命中率、生产多屏流程与合入版Windows原生补测仍未完成，见[验证记录](verification.md)。
 
 本轮macOS调查未回答：Snipaste Windows是否采用UI Automation（后续Windows证据见下，UIA仍未确认）；完整多层候选排序与邻域扫描策略；所有特殊窗口/辅助功能错误的分支；是否另有像素检测及其占比；原生性能和实际控件命中率。后续Windows v2只补强局部父子包含、邻域几何探测和层级历史的静态证据，不能将调查称为“完整还原Snipaste算法”，也不能把星镜修复预选框显示等同于已实现Snipaste同等级控件识别。
 
