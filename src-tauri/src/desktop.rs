@@ -695,9 +695,8 @@ async fn get_capture_element(
             generation,
         );
         #[cfg(not(target_os = "windows"))]
-        let bounds: Vec<_> = crate::window_regions::element_at(host.pid, position)
-            .into_iter()
-            .collect();
+        let bounds =
+            crate::window_regions::elements_at(host.window, position, &revision, generation);
         let context = app.state::<Context>();
         let Ok(_operation) = context.operation.try_lock() else {
             return Ok(Vec::new());

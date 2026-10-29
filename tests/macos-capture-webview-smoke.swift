@@ -11,7 +11,7 @@ import WebKit
 
 final class CaptureSmoke: NSObject, NSApplicationDelegate, WKURLSchemeHandler, WKScriptMessageHandler, WKNavigationDelegate {
     let root: URL
-    let cases = ["startup-gate", "startup-failure", "module-worker", "worker-constructor-fallback", "worker-runtime-fallback", "native-element", "native-stale-tab", "worker-stale-tab"]
+    let cases = ["startup-gate", "startup-failure", "module-worker", "worker-constructor-fallback", "worker-runtime-fallback", "native-element", "native-panel-path", "native-stale-tab", "worker-stale-tab"]
     var caseIndex = 0
     var view: WKWebView?
     var window: NSWindow?
@@ -32,6 +32,8 @@ final class CaptureSmoke: NSObject, NSApplicationDelegate, WKURLSchemeHandler, W
     func applicationDidFinishLaunching(_ notification: Notification) {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
         window?.title = "Starshot — original fixture WebKit smoke test"
+        // Assertions drive DOM events; live desktop pointer movement is unrelated input.
+        window?.ignoresMouseEvents = true
         nextCase()
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -56,7 +58,22 @@ final class CaptureSmoke: NSObject, NSApplicationDelegate, WKURLSchemeHandler, W
         let scenario = String(data: try! JSONSerialization.data(withJSONObject: currentCase, options: [.fragmentsAllowed]), encoding: .utf8)!
         return """
         (() => {
-          const scenario = \(scenario), state = { workerPosted: false, workerReply: false, fallback: false, requests: 0, resolved: 0, cycled: false, cycleAt: 0, errors: [], readyCalls: 0, readyError: '', readyCompleted: false, domDecoded: false, workers: 0, decodeGateChecked: false, acknowledgementGateChecked: false };
+          // WK tracking events can still arrive when NSWindow ignores mouse input.
+          // Isolate the fixture from the live desktop, preserving all scripted events.
+          for (const type of ['pointermove','pointerdown','pointerup','pointerover','pointerout','pointerenter','pointerleave','pointercancel','mousemove','mousedown','mouseup','mouseover','mouseout','mouseenter','mouseleave','click','dblclick','contextmenu','wheel','keydown','keyup']) {
+            window.addEventListener(type, event => {
+              if (!event.isTrusted) return;
+              event.stopImmediatePropagation();
+              if (event.cancelable) event.preventDefault();
+            }, {capture:true,passive:false});
+          }
+          const scenario = \(scenario), state = { workerPosted: false, workerReply: false, fallback: false, requests: 0, resolved: 0, cycled: false, cycleAt: 0, pathStep: 0, errors: [], readyCalls: 0, readyError: '', readyCompleted: false, domDecoded: false, workers: 0, decodeGateChecked: false, acknowledgementGateChecked: false };
+          const panelPath = [
+            {x:160,y:180,width:80,height:30,label:'模拟列表项'},
+            {x:80,y:100,width:300,height:500,label:'导航面板'},
+            {x:60,y:60,width:940,height:600,label:'内容区'},
+            {x:40,y:40,width:1000,height:650,label:'模拟窗口'}
+          ];
           const report = body => window.webkit.messageHandlers.probe.postMessage(body);
           window.addEventListener('error', event => { state.errors.push(event.message || 'window-error'); report({event:'window-error',message:event.message||'',file:event.filename||''}); });
           window.addEventListener('unhandledrejection', event => { state.errors.push(String(event.reason)); report({event:'unhandled-rejection',message:String(event.reason)}); });
@@ -80,7 +97,9 @@ final class CaptureSmoke: NSObject, NSApplicationDelegate, WKURLSchemeHandler, W
             if (command === 'get_capture_frame') {
               const canvas = document.createElement('canvas'); canvas.width = 1200; canvas.height = 750;
               const ctx = canvas.getContext('2d'); ctx.fillStyle = '#ffffff'; ctx.fillRect(0,0,1200,750);
-              ctx.fillStyle = '#2c3448'; ctx.fillRect(120,140,240,160);
+              ctx.fillStyle = '#2c3448';
+              if (scenario === 'native-panel-path') ctx.fillRect(70,90,320,520);
+              else ctx.fillRect(120,140,240,160);
               return {dataUrl:canvas.toDataURL('image/png'),width:1200,height:750,scaleFactor:1,pointer:{x:200,y:200},elementDetection:scenario.startsWith('native-')||scenario.startsWith('startup-'),regions:[{x:40,y:40,width:1000,height:650,label:'模拟窗口'}]};
             }
             if (command === 'capture_overlay_ready') {
@@ -102,6 +121,7 @@ final class CaptureSmoke: NSObject, NSApplicationDelegate, WKURLSchemeHandler, W
               if (args?.point?.x !== 200 || args?.point?.y !== 200) state.errors.push('initial pointer was not preserved');
               await new Promise(resolve => setTimeout(resolve, scenario === 'native-stale-tab' ? 400 : 10));
               state.resolved++;
+              if (scenario === 'native-panel-path' || scenario === 'native-stale-tab') return [...panelPath, panelPath[1], panelPath[3]];
               return [{x:160,y:180,width:80,height:30,label:'模拟控件'}];
             }
             throw new Error('Unexpected IPC: '+command);
@@ -113,11 +133,15 @@ final class CaptureSmoke: NSObject, NSApplicationDelegate, WKURLSchemeHandler, W
             window.Worker = class { constructor() { state.fallback = true; throw new Error('Intentional fixture constructor failure'); } };
           } else if (scenario === 'worker-runtime-fallback') {
             window.Worker = class { postMessage() { setTimeout(() => { state.fallback = true; this.onerror?.(new Event('error')); }, 10); } terminate() {} };
-          } else if (scenario === 'worker-stale-tab') {
+          } else if (scenario === 'worker-stale-tab' || scenario === 'native-panel-path') {
             window.Worker = class {
               constructor(...args) {
                 this.worker = new NativeWorker(...args);
-                this.worker.onmessage = event => setTimeout(() => { state.workerReply = true; this.onmessage?.(event); }, 400);
+                this.worker.onmessage = event => {
+                  const deliver = () => { state.workerReply = true; this.onmessage?.(event); };
+                  if (scenario === 'native-panel-path') state.releaseWorker = deliver;
+                  else setTimeout(deliver, 400);
+                };
                 this.worker.onerror = event => this.onerror?.(event);
               }
               postMessage(...args) { state.workerPosted = true; this.worker.postMessage(...args); }
@@ -138,6 +162,29 @@ final class CaptureSmoke: NSObject, NSApplicationDelegate, WKURLSchemeHandler, W
             }
             if (state.errors.length || error) return {...snapshot,result:'fail',reason:state.errors.join('; ')||error};
             if (!stage) return snapshot;
+            if (scenario === 'native-panel-path') {
+              if (!state.resolved) return snapshot;
+              const path = [
+                ['80 × 30','模拟列表项'], ['300 × 500','导航面板'], ['940 × 600','内容区'],
+                ['1000 × 650','模拟窗口'], ['1200 × 750','整个画面'], ['1200 × 750','整个画面'],
+                ['1000 × 650','模拟窗口'], ['940 × 600','内容区'], ['300 × 500','导航面板'],
+                ['80 × 30','模拟列表项'], ['80 × 30','模拟列表项']
+              ];
+              const expected = path[state.pathStep];
+              if (dimensions !== expected[0] || label !== expected[1] || pointer !== '200, 200') return {...snapshot,result:'fail',reason:'panel path step '+state.pathStep+' expected '+expected.join(' / ')};
+              // Release a real pixel rectangle between panel and content only after
+              // Tab has frozen the native path. It must not add an intermediate stop.
+              if (state.pathStep === 1 && !state.workerReply) {
+                if (state.releaseWorker) { state.releaseWorker(); state.releaseWorker = null; }
+                return snapshot;
+              }
+              if (state.pathStep === path.length-1) return {...snapshot,result:'pass',pathSteps:path.length};
+              const reverse = state.pathStep >= 5;
+              if (reverse) window.dispatchEvent(new KeyboardEvent('keydown',{key:'Shift',bubbles:true}));
+              window.dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',shiftKey:reverse,bubbles:true}));
+              if (reverse) window.dispatchEvent(new KeyboardEvent('keyup',{key:'Shift',bubbles:true}));
+              state.pathStep++; return snapshot;
+            }
             if (scenario === 'native-stale-tab' && !state.cycled && state.requests && dimensions === '240 × 160') {
               window.dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',bubbles:true})); state.cycled = true; state.cycleAt = performance.now(); return snapshot;
             }

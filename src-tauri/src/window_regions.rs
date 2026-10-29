@@ -22,7 +22,12 @@ pub struct NativeWindow {
 }
 
 #[cfg(all(feature = "desktop", target_os = "windows"))]
+#[path = "window_regions/windows.rs"]
 pub mod windows;
+
+#[cfg(any(target_os = "macos", test))]
+#[path = "window_regions/macos_elements.rs"]
+mod macos_elements;
 
 #[cfg(any(target_os = "macos", test))]
 #[derive(Clone, Copy)]
@@ -241,23 +246,27 @@ pub fn element_detection_available() -> bool {
     }
 }
 
-#[cfg(feature = "desktop")]
-pub fn element_at(pid: u32, position: (f64, f64)) -> Option<ElementBounds> {
-    // The non-macOS path has no AX implementation or permission side effect.
+#[cfg(all(feature = "desktop", not(target_os = "windows")))]
+pub fn elements_at(
+    host: WindowBounds,
+    position: (f64, f64),
+    revision: &std::sync::atomic::AtomicU64,
+    expected: u64,
+) -> Vec<ElementBounds> {
     #[cfg(target_os = "macos")]
     {
-        macos::element_at(pid, position)
+        macos_elements::query(host, position, revision, expected)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (pid, position);
-        None
+        let _ = (host, position, revision, expected);
+        Vec::new()
     }
 }
 
 #[cfg(all(feature = "desktop", target_os = "macos"))]
 mod macos {
-    use super::{can_query_element, candidate, ElementBounds, Metadata, WindowBounds};
+    use super::{candidate, Metadata, WindowBounds};
     use std::ffi::{c_char, c_void, CStr};
 
     type Ref = *const c_void;
@@ -303,17 +312,7 @@ mod macos {
     #[link(name = "ApplicationServices", kind = "framework")]
     unsafe extern "C" {
         fn AXIsProcessTrusted() -> bool;
-        fn AXUIElementCreateApplication(pid: i32) -> Ref;
-        fn AXUIElementSetMessagingTimeout(element: Ref, timeout: f32) -> i32;
-        fn AXUIElementCopyElementAtPosition(
-            application: Ref,
-            x: f32,
-            y: f32,
-            element: *mut Ref,
-        ) -> i32;
-        fn AXUIElementCopyAttributeValue(element: Ref, attribute: Ref, value: *mut Ref) -> i32;
-        fn AXValueGetTypeID() -> usize;
-        fn AXValueGetValue(value: Ref, kind: i32, output: *mut c_void) -> bool;
+
     }
     struct Owned(Ref);
     impl Drop for Owned {
@@ -349,71 +348,6 @@ mod macos {
     pub fn trusted() -> bool {
         // The non-prompting check never requests or changes Accessibility access.
         unsafe { AXIsProcessTrusted() }
-    }
-
-    pub fn element_at(pid: u32, position: (f64, f64)) -> Option<ElementBounds> {
-        if !can_query_element(trusted(), pid, position) {
-            return None;
-        }
-        let started = std::time::Instant::now();
-        let remaining = || {
-            let seconds = 0.080 - started.elapsed().as_secs_f32();
-            (seconds > 0.0).then_some(seconds)
-        };
-        unsafe {
-            let app = AXUIElementCreateApplication(pid as i32);
-            if app.is_null() {
-                return None;
-            }
-            let app = Owned(app);
-            if AXUIElementSetMessagingTimeout(app.0, remaining()?) != 0 {
-                return None;
-            }
-            let mut element = std::ptr::null();
-            let hit = AXUIElementCopyElementAtPosition(
-                app.0,
-                position.0 as f32,
-                position.1 as f32,
-                &mut element,
-            );
-            if element.is_null() {
-                return None;
-            }
-            let element = Owned(element);
-            if hit != 0 {
-                return None;
-            }
-            let copy_geometry = |name: &CStr| -> Option<Owned> {
-                let attribute = key(name).ok()?;
-                // The SDK specifies that timeouts belong to each AX object, not
-                // equal/child objects. Apply the remaining 80ms budget here too.
-                if AXUIElementSetMessagingTimeout(element.0, remaining()?) != 0 {
-                    return None;
-                }
-                let mut value = std::ptr::null();
-                let copied = AXUIElementCopyAttributeValue(element.0, attribute.0, &mut value);
-                if value.is_null() {
-                    return None;
-                }
-                let value = Owned(value);
-                (copied == 0 && CFGetTypeID(value.0) == AXValueGetTypeID()).then_some(value)
-            };
-            let position = copy_geometry(c"AXPosition")?;
-            let size = copy_geometry(c"AXSize")?;
-            let mut point = Point::default();
-            let mut dimensions = Size::default();
-            if !AXValueGetValue(position.0, 1, (&mut point as *mut Point).cast())
-                || !AXValueGetValue(size.0, 2, (&mut dimensions as *mut Size).cast())
-            {
-                return None;
-            }
-            Some(ElementBounds {
-                x: point.x,
-                y: point.y,
-                width: dimensions.width,
-                height: dimensions.height,
-            })
-        }
     }
 
     pub fn snapshot(own_pid: u32) -> Result<Vec<WindowBounds>, String> {
