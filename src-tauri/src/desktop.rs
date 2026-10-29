@@ -170,7 +170,6 @@ struct Context {
     operation: Mutex<()>,
     frames: Mutex<HashMap<String, Frame>>,
     scroll: Mutex<Option<ScrollCapture>>,
-    capture_restore_main: Mutex<bool>,
     current: Mutex<Option<ImagePayload>>,
     pending_pin_edit: Mutex<Option<PendingPinEdit>>,
     pins: Mutex<HashMap<String, ImagePayload>>,
@@ -309,7 +308,6 @@ fn begin_capture(app: &AppHandle) -> Result<()> {
     } else {
         false
     };
-    *lock(&context.capture_restore_main)? = main_was_visible;
     if main_was_visible {
         // Only wait when the compositor actually has an editor to remove.
         std::thread::sleep(Duration::from_millis(180));
@@ -1002,12 +1000,8 @@ async fn cancel_capture(app: AppHandle, window: WebviewWindow) -> Result<()> {
         if label != "main" && !lock(&context.frames)?.contains_key(&label) {
             return Err("截图会话已结束".into());
         }
-        let restore_main = *lock(&context.capture_restore_main)?;
-        clear_capture(&app)?;
-        if restore_main {
-            show_main(&app);
-        }
-        Ok(())
+        // Dismissing capture keeps the editor tucked away; its session is untouched.
+        clear_capture(&app)
     })
     .await
     .map_err(|_| "取消截图失败")?
@@ -2330,12 +2324,8 @@ pub fn run() {
                                 .frames
                                 .lock()
                                 .is_ok_and(|frames| frames.contains_key(&label));
-                            let restore = context.capture_restore_main.lock().is_ok_and(|v| *v);
                             if active {
                                 let _ = clear_capture(&app);
-                                if restore {
-                                    show_main(&app);
-                                }
                             }
                         };
                     });
