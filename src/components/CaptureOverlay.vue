@@ -1,16 +1,18 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { captureRegionsAt, normalizeRect } from '../geometry'
+import { captureRegionsAt, detectRegions, normalizeRect } from '../geometry'
 import { DEFAULT_STYLE, renderImage, renderPreview } from '../editor'
 import type { Annotation } from '../editor'
 import Icon from './Icon.vue'
+import ScrollCapturePanel from './ScrollCapturePanel.vue'
 
 type Rect = { x: number; y: number; width: number; height: number }
 type Region = Rect & { label: string }
-type Frame = { dataUrl: string; width: number; height: number; regions: Region[]; scaleFactor: number }
+type Frame = { dataUrl: string; width: number; height: number; regions: Region[]; scaleFactor: number; regionWarning?: string; pointer?: { x: number; y: number }; elementDetection?: boolean }
 type Handle = 'n' | 's' | 'e' | 'w' | 'nw' | 'ne' | 'sw' | 'se'
 type Action = 'copy' | 'save' | 'pin' | 'edit'
+type ScrollProgress = { width: number; height: number; frames: number; previewDataUrl: string; message: string }
 const emit = defineEmits<{ captured: [image: { dataUrl: string; width: number; height: number; name: string }]; cancel: [] }>()
 const props = withDefaults(defineProps<{ demo?: boolean }>(), { demo: false })
 const desktop = !props.demo && '__TAURI_INTERNALS__' in window
@@ -21,6 +23,8 @@ const toolbar = ref<HTMLElement>()
 const frame = shallowRef<Frame>()
 const selected = ref<Rect>()
 const hovered = ref<Region>()
+const elementRegion = shallowRef<Region[]>([])
+const regionNotice = ref('')
 const pointer = ref({ x: 0, y: 0, clientX: 0, clientY: 0 })
 const viewport = ref({ width: window.innerWidth, height: window.innerHeight })
 const toolbarSize = ref({ width: 640, height: 48 })
@@ -31,6 +35,9 @@ const error = ref('')
 const status = ref('')
 const pixelColor = ref('#000000')
 const hideMagnifier = ref(false)
+const guidesVisible = ref(true)
+const scrolling = ref(false)
+const scrollProgress = shallowRef<ScrollProgress>()
 const shiftHeld = ref(false)
 const activeHandle = ref<Handle | 'move' | 'new'>('new')
 const dragOrigin = ref({ x: 0, y: 0 })
@@ -60,6 +67,13 @@ let mounted = true
 let moveRequest = 0
 let drawRequest = 0
 let probeRequest = 0
+let elementTimer = 0
+let elementToken = 0
+let elementBusy = false
+let pointerInside = false
+let keyboardCandidate = false
+let keyboardChoices: Region[] = []
+let beforeShift: Region | undefined
 let pendingMove: PointerEvent | undefined
 let annotationOrigin: { x: number; y: number } | undefined
 let pointerStart = { x: 0, y: 0 }
@@ -87,9 +101,15 @@ const magnifierStyle = computed(() => ({
   top: `${Math.max(8, Math.min(pointer.value.clientY + 26, viewport.value.height - 166))}px`,
 }))
 const showMagnifier = computed(() => ready.value && !hideMagnifier.value && !busy.value && !error.value && (!selected.value || dragging.value))
+const showGuides = computed(() => ready.value && guidesVisible.value && !hideMagnifier.value && !busy.value && tool.value === 'cursor' && (!selected.value || dragging.value))
+const canStartScroll = computed(() => desktop && validSelection.value && currentRect.value!.width >= 64 && currentRect.value!.height >= 64 && !annotations.value.length)
+const scrollHint = computed(() => !desktop ? '滚动长截图仅桌面版可用' : annotations.value.length ? '先撤销标注再开始长截图，完成后可继续编辑' : !canStartScroll.value ? '长截图选区至少 64 × 64 像素' : '滚动长截图：手动滚动，逐屏采集并拼接')
 
 function point(event: PointerEvent) {
   const f = frame.value!
+  // WebView2 can finish a mixed-DPI resize before our mounted listener exists.
+  // Read the current CSS viewport instead of reusing the startup dimensions.
+  viewport.value = { width: window.innerWidth, height: window.innerHeight }
   return { x: Math.max(0, Math.min(f.width - 1, Math.floor(event.clientX / viewport.value.width * f.width))), y: Math.max(0, Math.min(f.height - 1, Math.floor(event.clientY / viewport.value.height * f.height))) }
 }
 function bounded(r: Rect): Rect {
@@ -100,7 +120,33 @@ function bounded(r: Rect): Rect {
 }
 const contains = (r: Rect, x: number, y: number) => x >= r.x && y >= r.y && x < r.x + r.width && y < r.y + r.height
 function updateHover() {
-  hovered.value = shiftHeld.value || !frame.value ? undefined : captureRegionsAt(pointer.value, windowRegions, regions, frame.value)[0]
+  if (keyboardCandidate) return
+  hovered.value = shiftHeld.value || !frame.value ? undefined : captureRegionsAt(pointer.value, windowRegions, regions, frame.value, elementRegion.value)[0]
+}
+function stopElementQuery() {
+  elementToken++; clearTimeout(elementTimer); elementTimer = 0
+  if (desktop && frame.value?.elementDetection) {
+    void invoke('invalidate_capture_element', { generation: elementToken }).catch(() => {})
+  }
+}
+function scheduleElementQuery() {
+  stopElementQuery(); elementRegion.value = []
+  if (!desktop || !frame.value?.elementDetection || selected.value || shiftHeld.value || busy.value || scrolling.value) return
+  const token = elementToken, point = { x: pointer.value.x, y: pointer.value.y }
+  const query = async () => {
+    if (!mounted || token !== elementToken) return
+    // One native request at a time; a slow target app must not build an IPC queue.
+    if (elementBusy) { elementTimer = window.setTimeout(query, 80); return }
+    elementBusy = true
+    try {
+      const region = await invoke<Region[] | Region | null>('get_capture_element', { point, generation: token })
+      if (mounted && token === elementToken && !keyboardCandidate && !busy.value && !selected.value && !dragging.value && !shiftHeld.value) {
+        elementRegion.value = Array.isArray(region) ? region : region ? [region] : []; updateHover()
+      }
+    } catch { /* Window and pixel candidates remain usable if the target app cannot answer. */ }
+    finally { elementBusy = false }
+  }
+  elementTimer = window.setTimeout(query, 80)
 }
 function updateMagnifier() {
   if (!showMagnifier.value || !source || !magnifier.value) return
@@ -147,9 +193,11 @@ function drawPreview() {
   } catch (cause) { error.value = String(cause) }
 }
 function applyMove(event: PointerEvent) {
-  if (!ready.value || !frame.value || busy.value) return
+  if (!ready.value || !frame.value || busy.value || scrolling.value) return
   const p = point(event)
-  const moved = p.x !== pointer.value.x || p.y !== pointer.value.y || event.shiftKey !== shiftHeld.value
+  const moved = !pointerInside || p.x !== pointer.value.x || p.y !== pointer.value.y || event.shiftKey !== shiftHeld.value
+  pointerInside = true
+  if (moved) { keyboardCandidate = false; keyboardChoices = []; beforeShift = undefined }
   pointer.value = { ...p, clientX: event.clientX, clientY: event.clientY }
   shiftHeld.value = event.shiftKey
   if (annotationOrigin && draft.value) {
@@ -177,13 +225,19 @@ function applyMove(event: PointerEvent) {
         selected.value = bounded({ x: left, y: top, width: right - left, height: bottom - top })
       }
     }
-  } else if (!selected.value && moved) updateHover()
+  } else if (!selected.value && moved) { scheduleElementQuery(); updateHover() }
   updateMagnifier()
 }
 function move(event: PointerEvent) {
   pendingMove = event
   if (moveRequest) return
   moveRequest = requestAnimationFrame(() => { moveRequest = 0; const event = pendingMove; pendingMove = undefined; if (event) applyMove(event) })
+}
+function leave() {
+  // A queued move from the old monitor must not restart its cancelled query.
+  cancelAnimationFrame(moveRequest); moveRequest = 0; pendingMove = undefined
+  pointerInside = false
+  stopElementQuery()
 }
 function flushMove(event?: PointerEvent) {
   cancelAnimationFrame(moveRequest); moveRequest = 0
@@ -193,6 +247,7 @@ function flushMove(event?: PointerEvent) {
 function begin(event: PointerEvent, handle: Handle | 'move' | 'new' = 'new') {
   if (!ready.value || busy.value || event.button !== 0) return
   flushMove(event)
+  stopElementQuery()
   const p = point(event)
   error.value = ''; status.value = ''
   if (selected.value && tool.value !== 'cursor' && contains(selected.value, p.x, p.y)) {
@@ -231,12 +286,14 @@ function abortPointer() {
   dragging.value = false
 }
 function reset() {
-  if (busy.value) return
+  if (busy.value || scrolling.value) return
   abortPointer(); selected.value = undefined; annotations.value = []; undoStack.length = 0; redoStack.length = 0; historyRevision.value++
-  tool.value = 'cursor'; error.value = ''; status.value = ''; updateHover()
+  tool.value = 'cursor'; error.value = ''; status.value = ''; keyboardCandidate = false; keyboardChoices = []; beforeShift = undefined
+  scheduleElementQuery(); updateHover()
 }
 function setTool(id: string) { if (!busy.value) { abortPointer(); tool.value = id; error.value = ''; status.value = '' } }
 async function perform(action: Action) {
+  if (scrolling.value) { await finishScroll(action); return }
   flushMove()
   const r = currentRect.value, f = frame.value
   if (!r || !f || !source || busy.value || !ready.value || dragging.value || annotationOrigin) return
@@ -266,9 +323,39 @@ async function perform(action: Action) {
   } catch (cause) { error.value = String(cause) }
   finally { busy.value = false }
 }
+async function startScroll() {
+  flushMove()
+  if (busy.value || scrolling.value || !canStartScroll.value || dragging.value || annotationOrigin) return
+  selected.value = bounded(currentRect.value!)
+  busy.value = true; scrolling.value = true; error.value = ''; status.value = ''
+  stopElementQuery()
+  try {
+    scrollProgress.value = await invoke<ScrollProgress>('begin_scroll_capture', { rect: selected.value })
+    // The native session now owns the full-resolution pixels; retain only its small preview here.
+    clearTimeout(probeRequest); regionWorker?.terminate(); regionWorker = undefined
+    source = undefined; frame.value = undefined; regions = []; windowRegions = []
+  } catch (cause) { scrolling.value = false; error.value = String(cause) }
+  finally { busy.value = false }
+}
+async function appendScroll() {
+  if (busy.value || !scrollProgress.value) return
+  busy.value = true; error.value = ''; status.value = ''
+  try { scrollProgress.value = await invoke<ScrollProgress>('append_scroll_capture') }
+  catch (cause) { error.value = String(cause) }
+  finally { busy.value = false }
+}
+async function finishScroll(action: Action) {
+  if (busy.value || !scrollProgress.value) return
+  busy.value = true; error.value = ''; status.value = ''
+  try {
+    const result = await invoke<{ completed: boolean; path?: string }>('finish_scroll_capture', { action })
+    if (!result.completed) status.value = '已取消保存，长截图仍保留。'
+  } catch (cause) { error.value = String(cause) }
+  finally { busy.value = false }
+}
 async function cancel() {
   if (busy.value) return
-  abortPointer(); busy.value = true
+  stopElementQuery(); abortPointer(); busy.value = true
   try { if (desktop) await invoke('cancel_capture'); else emit('cancel') }
   catch (cause) { error.value = String(cause) }
   finally { busy.value = false }
@@ -278,6 +365,14 @@ function keydown(event: KeyboardEvent) {
   const input = event.target instanceof HTMLElement && event.target.closest('input,textarea,select')
   if (input) { if (event.key === 'Escape') { event.preventDefault(); (event.target as HTMLElement).blur() }; return }
   if (event.key === 'Escape') { event.preventDefault(); if (annotationOrigin) abortPointer(); else void cancel(); return }
+  if (scrolling.value) {
+    if ((event.metaKey || event.ctrlKey) && ['c', 's'].includes(event.key.toLowerCase())) {
+      event.preventDefault(); void finishScroll(event.key.toLowerCase() === 'c' ? 'copy' : 'save')
+    } else if (event.key === 'Enter' && !(event.target instanceof HTMLElement && event.target.closest('button'))) {
+      event.preventDefault(); void appendScroll()
+    }
+    return
+  }
   if (event.metaKey || event.ctrlKey) {
     const key = event.key.toLowerCase()
     if (key === 'z') { event.preventDefault(); event.shiftKey ? redo() : undo() }
@@ -288,12 +383,23 @@ function keydown(event: KeyboardEvent) {
     if (event.target instanceof HTMLElement && event.target.closest('button')) return
     event.preventDefault(); void perform('copy'); return
   }
-  if (event.key === 'Shift' && !selected.value) { shiftHeld.value = true; updateHover() }
+  if (event.key === 'Shift' && !selected.value && !event.repeat) { flushMove(); beforeShift = hovered.value; shiftHeld.value = true; keyboardCandidate = false; stopElementQuery(); updateHover() }
+  if (event.key.toLowerCase() === 'h') { event.preventDefault(); guidesVisible.value = !guidesVisible.value; return }
   if (event.key === 'Tab' && !selected.value) {
     event.preventDefault()
-    const choices = frame.value ? captureRegionsAt(pointer.value, windowRegions, regions, frame.value) : []
-    const index = choices.findIndex(r => r.x === hovered.value?.x && r.y === hovered.value?.y && r.width === hovered.value?.width && r.height === hovered.value?.height)
-    if (choices.length) hovered.value = choices[index < 0 ? (event.shiftKey ? choices.length - 1 : 0) : (index + (event.shiftKey ? choices.length - 1 : 1)) % choices.length]
+    // Commit/cancel a queued rAF move BEFORE locking the keyboard candidate.
+    // Otherwise that older move can run after Tab and unlock its selection.
+    flushMove()
+    stopElementQuery()
+    // Freeze this path so reverse selection retraces it even if edge analysis finishes.
+    const choices = keyboardChoices.length ? keyboardChoices : frame.value ? captureRegionsAt(pointer.value, windowRegions, regions, frame.value, elementRegion.value) : []
+    const previous = hovered.value ?? beforeShift
+    const index = choices.findIndex(r => r.x === previous?.x && r.y === previous?.y && r.width === previous?.width && r.height === previous?.height)
+    if (choices.length) {
+      keyboardChoices = choices
+      hovered.value = choices[index < 0 ? 0 : Math.max(0, Math.min(choices.length - 1, index + (event.shiftKey ? -1 : 1)))]
+      keyboardCandidate = true
+    }
     return
   }
   if (selected.value) {
@@ -310,7 +416,7 @@ function keydown(event: KeyboardEvent) {
     selected.value = bounded(r)
   }
 }
-function keyup(event: KeyboardEvent) { if (event.key === 'Shift') { shiftHeld.value = false; if (!selected.value) updateHover() } }
+function keyup(event: KeyboardEvent) { if (event.key === 'Shift') { flushMove(); shiftHeld.value = false; beforeShift = undefined; if (!selected.value && !keyboardCandidate) { keyboardChoices = []; scheduleElementQuery(); updateHover() } } }
 function resize() { viewport.value = { width: window.innerWidth, height: window.innerHeight }; scheduleDraw() }
 function findEdges() {
   if (!source || !frame.value || !mounted) return
@@ -321,17 +427,28 @@ function findEdges() {
   if (!ctx) return
   ctx.drawImage(source, 0, 0, probe.width, probe.height)
   const pixels = ctx.getImageData(0, 0, probe.width, probe.height).data
-  const worker = new Worker(new URL('../capture-regions.worker.ts', import.meta.url), { type: 'module' })
-  regionWorker = worker
-  worker.onmessage = (event: MessageEvent<Region[]>) => {
-    if (mounted) {
-      regions = event.data.map(region => ({ ...bounded({ x: region.x * f.width / probe.width, y: region.y * f.height / probe.height, width: region.width * f.width / probe.width, height: region.height * f.height / probe.height }), label: '边缘候选' })).sort((a, b) => a.width * a.height - b.width * b.height)
-      if (!selected.value && !dragging.value) updateHover()
-    }
-    worker.terminate(); if (regionWorker === worker) regionWorker = undefined
+  const accept = (found: Region[]) => {
+    if (!mounted || scrolling.value || frame.value !== f) return
+    regions = found.map(region => ({ ...bounded({ x: region.x * f.width / probe.width, y: region.y * f.height / probe.height, width: region.width * f.width / probe.width, height: region.height * f.height / probe.height }), label: '边缘候选' })).sort((a, b) => a.width * a.height - b.width * b.height)
+    regionNotice.value = f.regionWarning ?? ''
+    if (!selected.value && !dragging.value) updateHover()
   }
-  worker.onerror = () => { worker.terminate(); if (regionWorker === worker) regionWorker = undefined }
-  worker.postMessage({ pixels, width: probe.width, height: probe.height }, [pixels.buffer])
+  const fallback = () => {
+    regionWorker?.terminate(); regionWorker = undefined
+    if (!mounted || scrolling.value || frame.value !== f) return
+    try {
+      // postMessage may already have detached pixels. Re-read only the bounded
+      // probe after a worker failure; never allocate another full-screen canvas.
+      accept(detectRegions(ctx.getImageData(0, 0, probe.width, probe.height).data, probe.width, probe.height))
+    } catch { regionNotice.value = '暂时无法识别小区域，可点击窗口或拖动框选。' }
+  }
+  try {
+    const worker = new Worker(new URL('../capture-regions.worker.ts', import.meta.url), { type: 'module' })
+    regionWorker = worker
+    worker.onmessage = (event: MessageEvent<Region[]>) => { accept(event.data); worker.terminate(); if (regionWorker === worker) regionWorker = undefined }
+    worker.onerror = fallback
+    worker.postMessage({ pixels, width: probe.width, height: probe.height }, [pixels.buffer])
+  } catch { fallback() }
 }
 watch([annotations, draft, selected], scheduleDraw)
 watch(toolbar, element => {
@@ -350,6 +467,7 @@ onMounted(async () => {
     const image = new Image(); image.src = next.dataUrl; await image.decode()
     if (!mounted) return
     source = image
+    resize()
     if (!desktop) {
       const raster = document.createElement('canvas'); raster.width = next.width; raster.height = next.height
       raster.getContext('2d')!.drawImage(image, 0, 0, next.width, next.height)
@@ -358,22 +476,30 @@ onMounted(async () => {
     // Preserve the system front-to-back order; hidden smaller windows must not steal hover.
     windowRegions = desktop ? next.regions.filter(r => r.width > 0 && r.height > 0) : []
     ready.value = true
-    pointer.value = { x: Math.floor(next.width / 2), y: Math.floor(next.height / 2), clientX: viewport.value.width / 2, clientY: viewport.value.height / 2 }
-    updateHover(); await nextTick(); updateMagnifier()
-    // Paint the usable selector first; bounded edge analysis runs off the UI thread.
-    probeRequest = requestAnimationFrame(() => { probeRequest = requestAnimationFrame(() => { try { findEdges() } catch { /* Native window candidates and manual selection remain usable. */ } }) })
+    const initial = next.pointer && Number.isFinite(next.pointer.x) && Number.isFinite(next.pointer.y) && next.pointer.x >= 0 && next.pointer.y >= 0 && next.pointer.x < next.width && next.pointer.y < next.height ? next.pointer : { x: Math.floor(next.width / 2), y: Math.floor(next.height / 2) }
+    pointer.value = { x: Math.floor(initial.x), y: Math.floor(initial.y), clientX: initial.x / next.width * viewport.value.width, clientY: initial.y / next.height * viewport.value.height }
+    regionNotice.value = '正在识别画面区域…'
+    updateHover()
+    // Only the monitor containing the real stationary cursor starts a native query.
+    // Other monitors retain the window/edge fallback until pointer entry/movement.
+    pointerInside = !!frame.value?.pointer
+    if (pointerInside) scheduleElementQuery()
+    await nextTick(); updateMagnifier()
+    // Start even when an unfocused monitor's WebView has not scheduled a paint.
+    probeRequest = window.setTimeout(() => { try { findEdges() } catch { regionNotice.value = '暂时无法识别小区域，可点击窗口或拖动框选。' } }, 0)
   } catch (cause) { if (mounted) error.value = String(cause) }
 })
 onBeforeUnmount(() => {
   mounted = false; regionWorker?.terminate(); toolbarObserver?.disconnect()
-  cancelAnimationFrame(moveRequest); cancelAnimationFrame(drawRequest); cancelAnimationFrame(probeRequest)
+  stopElementQuery(); cancelAnimationFrame(moveRequest); cancelAnimationFrame(drawRequest); clearTimeout(probeRequest)
   window.removeEventListener('keydown', keydown); window.removeEventListener('keyup', keyup); window.removeEventListener('resize', resize)
   source = undefined; pendingMove = undefined
 })
 </script>
 
 <template>
-  <main ref="stage" class="capture-stage" aria-label="截图区域选择" :class="{ 'is-dragging': dragging }" @pointermove="move" @pointerdown="begin($event)" @pointerup="end" @pointercancel="abortPointer" @contextmenu.prevent="cancel">
+  <ScrollCapturePanel v-if="scrolling" :progress="scrollProgress" :busy="busy" :error="error" :status="status" @append="appendScroll" @finish="finishScroll" @cancel="cancel" />
+  <main v-else ref="stage" class="capture-stage" aria-label="截图区域选择" :class="{ 'is-dragging': dragging }" @pointerenter="move" @pointermove="move" @pointerleave="leave" @pointerdown="begin($event)" @pointerup="end" @pointercancel="abortPointer" @contextmenu.prevent="cancel">
     <img v-if="frame" class="capture-source" :src="frame.dataUrl" alt="当前冻结的屏幕画面" draggable="false" />
     <div v-if="!currentRect" class="capture-shade" />
     <div v-if="currentRect" class="capture-selection" :class="{ 'is-selected': selected, 'is-drawing': tool !== 'cursor' }" :style="selectionStyle" @pointerdown.stop="begin($event, selected ? 'move' : 'new')" @dblclick.stop="tool === 'cursor' && perform('copy')">
@@ -383,8 +509,10 @@ onBeforeUnmount(() => {
         <button v-for="handle in handles" :key="handle" class="capture-handle" :class="`handle-${handle}`" :aria-label="`调整选区 ${handle}`" tabindex="-1" :disabled="busy" @pointerdown.stop="begin($event, handle)" />
       </template>
     </div>
+    <div v-if="showGuides" class="capture-guides" aria-hidden="true"><i class="guide-horizontal" :style="{ top: `${pointer.clientY}px` }" /><i class="guide-vertical" :style="{ left: `${pointer.clientX}px` }" /></div>
     <aside v-if="!selected" class="capture-hint" @pointerdown.stop @pointerenter="hideMagnifier = true" @pointerleave="hideMagnifier = false">
-      <span>{{ desktop ? '拖动或点击选区' : '原创演示 · 不读取屏幕' }}</span><span><kbd>Shift</kbd> 手动 <b>·</b> <kbd>Tab</kbd> 切换候选 <b>·</b> <kbd>Esc</kbd> 取消</span>
+      <span>{{ desktop ? '拖动或点击选区' : '原创演示 · 不读取屏幕' }}</span><span><kbd>Shift</kbd> 手动 <b>·</b> <kbd>Tab</kbd> 扩大 / <kbd>Shift+Tab</kbd> 缩小 <b>·</b> <kbd>H</kbd> 辅助线 <b>·</b> <kbd>Esc</kbd> 取消</span>
+      <small v-if="regionNotice" class="capture-detection-note" role="status">{{ regionNotice }}</small>
     </aside>
     <div v-show="showMagnifier" class="capture-magnifier" :style="magnifierStyle" aria-hidden="true"><canvas ref="magnifier" width="150" height="100" /><div><i :style="{ backgroundColor: pixelColor }" /><code>{{ pixelColor }}</code><small>{{ pointer.x }}, {{ pointer.y }}</small></div></div>
     <section v-if="selected && !dragging" ref="toolbar" class="capture-toolbar" :style="toolbarStyle" aria-label="截图工具条" @pointerdown.stop @pointermove.stop @pointerenter="hideMagnifier = true" @pointerleave="hideMagnifier = false">
@@ -394,14 +522,15 @@ onBeforeUnmount(() => {
         <input v-model="color" type="color" title="标注颜色" aria-label="标注颜色" :disabled="busy"/>
         <select v-model.number="lineWidth" title="线条粗细" aria-label="线条粗细" :disabled="busy"><option :value="2">细</option><option :value="3">中</option><option :value="6">粗</option></select>
         <button title="撤销（⌘/Ctrl Z）" aria-label="撤销" :disabled="busy || !canUndo" @click="undo"><Icon name="undo" :size="18"/></button>
-        <button title="重做" aria-label="重做" :disabled="busy || !canRedo" @click="redo"><Icon name="redo" :size="18"/></button>
+        <button title="重做（⌘/Ctrl Shift Z）" aria-label="重做" :disabled="busy || !canRedo" @click="redo"><Icon name="redo" :size="18"/></button>
         <span class="separator"/>
         <button title="重新选择区域并清除本次标注" aria-label="重选区域" :disabled="busy" @click="reset"><Icon name="capture" :size="18"/></button>
+        <button :title="scrollHint" aria-label="滚动长截图" :disabled="busy || !canStartScroll" @click="startScroll"><Icon name="scroll" :size="18"/></button>
         <button title="更多编辑：美化、贴纸与自动打码" aria-label="更多编辑" :disabled="busy || !validSelection" @click="perform('edit')"><Icon name="spark" :size="18"/></button>
-        <button :title="desktop ? '贴到桌面' : '贴到桌面仅桌面版可用'" aria-label="贴到桌面" :disabled="busy || !desktop || !validSelection" @click="perform('pin')"><Icon name="pin" :size="18"/></button>
+        <button :title="desktop ? '置顶为桌面贴图；双击贴图可关闭，右键可复制、保存或调整。' : '贴到桌面仅桌面版可用'" aria-label="贴到桌面" :disabled="busy || !desktop || !validSelection" @click="perform('pin')"><Icon name="pin" :size="18"/></button>
         <button title="保存 PNG（⌘/Ctrl S）" aria-label="保存截图" :disabled="busy || !validSelection" @click="perform('save')"><Icon name="save" :size="18"/></button>
         <button title="取消截图（Esc）" aria-label="取消截图" :disabled="busy" @click="cancel"><Icon name="close" :size="18"/></button>
-        <button class="capture-confirm" title="复制图片并完成（Enter）" aria-label="复制截图" :disabled="busy || !validSelection" @click="perform('copy')"><Icon name="check" :size="18"/><span>{{ busy ? '处理中' : '复制' }}</span></button>
+        <button class="capture-confirm" title="复制图片并完成（Enter 或 ⌘/Ctrl C）" aria-label="复制截图" :disabled="busy || !validSelection" @click="perform('copy')"><Icon name="check" :size="18"/><span>{{ busy ? '处理中' : '复制' }}</span></button>
       </div>
       <div v-if="tool === 'text'" class="capture-text"><input v-model="text" maxlength="1000" placeholder="输入文字，再点击选区放置" aria-label="截图标注文字" :disabled="busy" /></div>
       <p v-if="error || status" class="capture-status" :class="{ failure: error }" :role="error ? 'alert' : 'status'">{{ error || status }}</p>
@@ -412,6 +541,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.capture-guides{position:absolute;inset:0;z-index:2;pointer-events:none}.capture-guides i{position:absolute;display:block;background:#dcf4b380;box-shadow:0 0 0 1px #0b132640}.guide-horizontal{left:0;width:100%;height:1px}.guide-vertical{top:0;width:1px;height:100%}
 .capture-stage{position:fixed;inset:0;background:#0b0e16;overflow:hidden;color:#f2f4fa;font-family:Inter,"PingFang SC","Microsoft YaHei",sans-serif;cursor:crosshair;user-select:none;touch-action:none}
-.capture-stage button{font:inherit}.capture-source{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;pointer-events:none}.capture-shade{position:absolute;inset:0;background:#06091470;pointer-events:none}.capture-selection{position:absolute;box-sizing:border-box;outline:1px solid #c8e7a0;box-shadow:0 0 0 9999px #05081375;z-index:1}.capture-selection.is-selected{cursor:move}.capture-selection.is-drawing{cursor:crosshair}.capture-edit-preview{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none}.capture-dimensions{position:absolute;left:-1px;bottom:calc(100% + 5px);display:flex;gap:9px;padding:4px 7px;background:#151b25e8;border-radius:4px;white-space:nowrap;font-size:11px;pointer-events:none}.capture-dimensions.place-inside{bottom:auto;top:5px;left:5px}.capture-dimensions span{color:#adb7c7}.capture-dimensions strong{font-weight:550;font-variant-numeric:tabular-nums}.capture-handle{position:absolute;width:7px;height:7px;padding:0;border:1px solid #182316;background:#e1fda6;border-radius:1px}.handle-nw{top:-4px;left:-4px;cursor:nwse-resize}.handle-ne{top:-4px;right:-4px;cursor:nesw-resize}.handle-sw{bottom:-4px;left:-4px;cursor:nesw-resize}.handle-se{bottom:-4px;right:-4px;cursor:nwse-resize}.handle-n{top:-4px;left:calc(50% - 3px);cursor:ns-resize}.handle-s{bottom:-4px;left:calc(50% - 3px);cursor:ns-resize}.handle-w{left:-4px;top:calc(50% - 3px);cursor:ew-resize}.handle-e{right:-4px;top:calc(50% - 3px);cursor:ew-resize}.capture-hint{position:absolute;z-index:3;bottom:18px;left:50%;transform:translateX(-50%);display:flex;gap:16px;max-width:calc(100vw - 32px);padding:8px 12px;border:1px solid #ffffff1f;border-radius:6px;background:#151b25e8;cursor:default;font-size:11px;white-space:nowrap;color:#c3ccda}.capture-hint b{font-weight:400;margin:0 6px;color:#667386}kbd{font:inherit;color:#f1f5f9}.capture-magnifier{position:absolute;z-index:4;width:150px;padding:4px;border:1px solid #ffffff40;border-radius:6px;background:#101625f5;pointer-events:none}.capture-magnifier canvas{display:block;width:150px;height:100px}.capture-magnifier div{display:flex;align-items:center;justify-content:space-between;gap:4px;padding-top:5px}.capture-magnifier i{width:10px;height:10px;border:1px solid #ffffff25}.capture-magnifier code,.capture-magnifier small{font-size:10px;color:#c3ccda}.capture-toolbar{position:absolute;z-index:5;max-width:calc(100vw - 16px);box-sizing:border-box;padding:5px;background:#f9fafb;color:#263141;border:1px solid #d5dbe2;box-shadow:0 3px 12px #0003;border-radius:7px;cursor:default}.capture-tools{display:flex;flex-wrap:wrap;align-items:center;gap:2px}.capture-tools button{position:relative;display:inline-flex;align-items:center;justify-content:center;gap:4px;width:30px;height:30px;padding:0;border:0;border-radius:4px;background:transparent;color:inherit;cursor:pointer}.capture-tools button:hover{background:#e4e9f0}.capture-tools button.active{background:#e3efd6;color:#375824}.capture-tools button.capture-confirm{width:auto;min-width:57px;padding:0 8px;background:#dceacb;color:#2a441e;font-size:12px}.capture-tools button:disabled,.capture-tools input:disabled,.capture-tools select:disabled{opacity:.4;cursor:default}.capture-tools button:focus-visible,.capture-tools input:focus-visible,.capture-tools select:focus-visible{outline:2px solid #729452;outline-offset:1px}.separator{height:20px;width:1px;background:#d7dde5;margin:0 4px}.capture-tools input[type=color]{width:25px;height:25px;padding:2px;border:1px solid #d4dbe3;background:white;cursor:pointer;border-radius:4px}.capture-tools select{width:38px;height:26px;background:transparent;border:0;color:inherit;font-size:11px}.redact-dot{position:absolute;width:9px;height:8px;background:currentColor;pointer-events:none}.capture-text{padding:5px 2px 0}.capture-text input{box-sizing:border-box;width:100%;padding:7px 9px;border:1px solid #d0d8e2;border-radius:4px;font:inherit;font-size:12px;user-select:text;background:white;color:#263141}.capture-status{font-size:11px;line-height:1.5;white-space:normal;overflow-wrap:anywhere;margin:5px 4px 2px;max-width:600px;color:#375824}.capture-status.failure{color:#9d2f38}.capture-error{position:absolute;z-index:8;top:50%;left:50%;transform:translate(-50%,-50%);width:min(380px,calc(100vw - 48px));padding:25px;background:#151c2c;border:1px solid #ffb4ac66;border-radius:10px;cursor:default}.capture-error strong{color:#ffd0cb;font-size:15px}.capture-error p{font-size:13px;line-height:1.7;color:#abb6cb;overflow-wrap:anywhere}.capture-error button{background:#ffffff10;border:0;border-radius:5px;padding:9px;color:white;width:100%;cursor:pointer}.capture-loading{position:absolute;inset:0;display:grid;place-items:center;font-size:14px;color:#aebbd0;pointer-events:none}.is-dragging .capture-selection{cursor:crosshair}@media(max-width:600px){.capture-hint{gap:6px;font-size:10px}.capture-tools{gap:1px}.capture-tools button{width:28px}.separator{margin:0 2px}}
+.capture-stage button{font:inherit}.capture-source{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;pointer-events:none}.capture-shade{position:absolute;inset:0;background:#06091470;pointer-events:none}.capture-selection{position:absolute;box-sizing:border-box;outline:1px solid #c8e7a0;outline-offset:-1px;box-shadow:0 0 0 9999px #05081375;z-index:1}.capture-selection.is-selected{cursor:move}.capture-selection.is-drawing{cursor:crosshair}.capture-edit-preview{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none}.capture-dimensions{position:absolute;left:-1px;bottom:calc(100% + 5px);display:flex;gap:9px;padding:4px 7px;background:#151b25e8;border-radius:4px;white-space:nowrap;font-size:11px;pointer-events:none}.capture-dimensions.place-inside{bottom:auto;top:5px;left:5px}.capture-dimensions span{color:#adb7c7}.capture-dimensions strong{font-weight:550;font-variant-numeric:tabular-nums}.capture-handle{position:absolute;width:7px;height:7px;padding:0;border:1px solid #182316;background:#e1fda6;border-radius:1px}.handle-nw{top:-4px;left:-4px;cursor:nwse-resize}.handle-ne{top:-4px;right:-4px;cursor:nesw-resize}.handle-sw{bottom:-4px;left:-4px;cursor:nesw-resize}.handle-se{bottom:-4px;right:-4px;cursor:nwse-resize}.handle-n{top:-4px;left:calc(50% - 3px);cursor:ns-resize}.handle-s{bottom:-4px;left:calc(50% - 3px);cursor:ns-resize}.handle-w{left:-4px;top:calc(50% - 3px);cursor:ew-resize}.handle-e{right:-4px;top:calc(50% - 3px);cursor:ew-resize}.capture-hint{position:absolute;z-index:3;bottom:18px;left:50%;transform:translateX(-50%);display:flex;gap:16px;max-width:calc(100vw - 32px);padding:8px 12px;border:1px solid #ffffff1f;border-radius:6px;background:#151b25e8;cursor:default;font-size:11px;white-space:nowrap;color:#c3ccda}.capture-hint{flex-wrap:wrap;justify-content:center;row-gap:4px}.capture-detection-note{flex-basis:100%;font-size:10px;text-align:center;white-space:normal;color:#a7b8d1}.capture-hint b{font-weight:400;margin:0 6px;color:#667386}kbd{font:inherit;color:#f1f5f9}.capture-magnifier{position:absolute;z-index:4;width:150px;padding:4px;border:1px solid #ffffff40;border-radius:6px;background:#101625f5;pointer-events:none}.capture-magnifier canvas{display:block;width:150px;height:100px}.capture-magnifier div{display:flex;align-items:center;justify-content:space-between;gap:4px;padding-top:5px}.capture-magnifier i{width:10px;height:10px;border:1px solid #ffffff25}.capture-magnifier code,.capture-magnifier small{font-size:10px;color:#c3ccda}.capture-toolbar{position:absolute;z-index:5;max-width:calc(100vw - 16px);box-sizing:border-box;padding:5px;background:#f9fafb;color:#263141;border:1px solid #d5dbe2;box-shadow:0 3px 12px #0003;border-radius:7px;cursor:default}.capture-tools{display:flex;flex-wrap:wrap;align-items:center;gap:2px}.capture-tools button{position:relative;display:inline-flex;align-items:center;justify-content:center;gap:4px;width:30px;height:30px;padding:0;border:0;border-radius:4px;background:transparent;color:inherit;cursor:pointer}.capture-tools button:hover{background:#e4e9f0}.capture-tools button.active{background:#e3efd6;color:#375824}.capture-tools button.capture-confirm{width:auto;min-width:57px;padding:0 8px;background:#dceacb;color:#2a441e;font-size:12px}.capture-tools button:disabled,.capture-tools input:disabled,.capture-tools select:disabled{opacity:.4;cursor:default}.capture-tools button:focus-visible,.capture-tools input:focus-visible,.capture-tools select:focus-visible{outline:2px solid #729452;outline-offset:1px}.separator{height:20px;width:1px;background:#d7dde5;margin:0 4px}.capture-tools input[type=color]{width:25px;height:25px;padding:2px;border:1px solid #d4dbe3;background:white;cursor:pointer;border-radius:4px}.capture-tools select{width:38px;height:26px;background:transparent;border:0;color:inherit;font-size:11px}.redact-dot{position:absolute;width:9px;height:8px;background:currentColor;pointer-events:none}.capture-text{padding:5px 2px 0}.capture-text input{box-sizing:border-box;width:100%;padding:7px 9px;border:1px solid #d0d8e2;border-radius:4px;font:inherit;font-size:12px;user-select:text;background:white;color:#263141}.capture-status{font-size:11px;line-height:1.5;white-space:normal;overflow-wrap:anywhere;margin:5px 4px 2px;max-width:600px;color:#375824}.capture-status.failure{color:#9d2f38}.capture-error{position:absolute;z-index:8;top:50%;left:50%;transform:translate(-50%,-50%);width:min(380px,calc(100vw - 48px));padding:25px;background:#151c2c;border:1px solid #ffb4ac66;border-radius:10px;cursor:default}.capture-error strong{color:#ffd0cb;font-size:15px}.capture-error p{font-size:13px;line-height:1.7;color:#abb6cb;overflow-wrap:anywhere}.capture-error button{background:#ffffff10;border:0;border-radius:5px;padding:9px;color:white;width:100%;cursor:pointer}.capture-loading{position:absolute;inset:0;display:grid;place-items:center;font-size:14px;color:#aebbd0;pointer-events:none}.is-dragging .capture-selection{cursor:crosshair}@media(max-width:600px){.capture-hint{gap:6px;font-size:10px}.capture-tools{gap:1px}.capture-tools button{width:28px}.separator{margin:0 2px}}
 </style>

@@ -12,6 +12,12 @@ pub struct DesktopSettings {
     pub pin_shortcut: String,
     #[serde(default)]
     pub start_in_tray: bool,
+    #[serde(default = "default_pin_halo")]
+    pub pin_halo: bool,
+}
+
+fn default_pin_halo() -> bool {
+    true
 }
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -27,6 +33,7 @@ impl Default for DesktopSettings {
             capture_shortcut: "CommandOrControl+Shift+2".into(),
             pin_shortcut: "CommandOrControl+Alt+3".into(),
             start_in_tray: false,
+            pin_halo: true,
         }
     }
 }
@@ -168,6 +175,7 @@ mod tests {
             capture_shortcut: "Control+Shift+4".into(),
             pin_shortcut: "Control+Shift+5".into(),
             start_in_tray: false,
+            pin_halo: true,
         };
         let previous: HashSet<_> = old
             .shortcuts()
@@ -201,6 +209,7 @@ mod tests {
             capture_shortcut: "Control+Shift+2".into(),
             pin_shortcut: "Ctrl+Shift+2".into(),
             start_in_tray: false,
+            pin_halo: true,
         };
         assert!(duplicate.shortcuts().is_err());
     }
@@ -260,6 +269,7 @@ mod tests {
         )
         .unwrap();
         assert!(!parsed.start_in_tray);
+        assert!(parsed.pin_halo);
         let json = serde_json::to_value(DesktopSettingsStatus {
             preferences: parsed,
             autostart: true,
@@ -267,6 +277,24 @@ mod tests {
         .unwrap();
         assert_eq!(json["autostart"], true);
         assert_eq!(json["startInTray"], false);
+        assert_eq!(json["pinHalo"], true);
+    }
+    #[test]
+    fn pin_halo_defaults_on_and_disabled_preference_survives_reload() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(load(directory.path()).unwrap().pin_halo);
+        let disabled = DesktopSettings {
+            pin_halo: false,
+            ..DesktopSettings::default()
+        };
+        save(directory.path(), &disabled).unwrap();
+        assert_eq!(load(directory.path()).unwrap(), disabled);
+        fs::write(
+            directory.path().join("desktop-settings.json"),
+            r#"{"captureShortcut":"Control+Shift+2","pinShortcut":"Control+Shift+3"}"#,
+        )
+        .unwrap();
+        assert!(load(directory.path()).unwrap().pin_halo);
     }
     #[test]
     fn missing_old_binding_does_not_prevent_change_or_get_registered_during_rollback() {
@@ -276,6 +304,7 @@ mod tests {
             capture_shortcut: "Control+Shift+4".into(),
             pin_shortcut: "Control+Shift+5".into(),
             start_in_tray: false,
+            pin_halo: true,
         };
         for fail in [false, true] {
             let mut active = HashSet::from([old_keys[0].id()]);

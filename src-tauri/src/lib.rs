@@ -5,10 +5,36 @@ mod desktop_settings;
 pub mod imaging;
 pub mod ocr;
 pub mod recovery;
+pub mod scrolling;
 #[cfg(feature = "desktop")]
 mod updater;
+#[cfg(any(feature = "desktop", test))]
+mod window_regions;
 #[cfg(feature = "desktop")]
 pub use desktop::run;
+
+pub fn run_uia_worker_if_requested() -> bool {
+    #[cfg(all(feature = "desktop", target_os = "windows"))]
+    {
+        return window_regions::windows::run_worker_if_requested();
+    }
+    #[cfg(not(all(feature = "desktop", target_os = "windows")))]
+    {
+        false
+    }
+}
+
+pub fn run_windows_smoke_if_requested() -> bool {
+    #[cfg(all(feature = "windows-uia-smoke", target_os = "windows"))]
+    {
+        return desktop::windows_integration::run_if_requested()
+            || desktop::windows_smoke::run_if_requested();
+    }
+    #[cfg(not(all(feature = "windows-uia-smoke", target_os = "windows")))]
+    {
+        false
+    }
+}
 
 #[cfg(all(test, feature = "desktop"))]
 mod capability_tests {
@@ -36,6 +62,8 @@ mod capability_tests {
         for (command, permitted) in [
             ("start_capture", [true, false, false]),
             ("get_current_image", [true, false, false]),
+            ("take_pending_pin_edit", [true, false, false]),
+            ("finish_pin_edit", [true, false, false]),
             ("save_image", [true, false, false]),
             ("copy_image", [true, false, false]),
             ("get_update_status", [true, false, false]),
@@ -68,10 +96,18 @@ mod capability_tests {
             ("plugin:updater|install", [false, false, false]),
             ("plugin:updater|download_and_install", [false, false, false]),
             ("get_capture_frame", [false, true, false]),
+            ("get_capture_element", [false, true, false]),
+            ("invalidate_capture_element", [false, true, false]),
+            ("native_smoke_report", [false, true, false]),
+            ("native_smoke_move", [false, true, false]),
             ("finish_capture", [false, true, false]),
+            ("begin_scroll_capture", [false, true, false]),
+            ("append_scroll_capture", [false, true, false]),
+            ("finish_scroll_capture", [false, true, false]),
             ("cancel_capture", [true, true, false]),
             ("get_pin_image", [false, false, true]),
             ("pin_action", [false, false, true]),
+            ("pin_export", [false, false, true]),
             ("plugin:dialog|save", [false, false, false]),
         ] {
             for (label, expected) in ["main", "capture-42-0", "pin-0"].into_iter().zip(permitted) {

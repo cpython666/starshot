@@ -39,6 +39,7 @@ const source = '(' + function ({ currentVersion, candidateVersion }) {
       if(command==='plugin:event|listen'){const id=++eventId;listeners.set(id,{...args,id});return id;}
       if(command==='plugin:event|unlisten'){listeners.delete(args.eventId);return;}
       if(command==='get_current_image')return null;
+      if(command==='take_pending_pin_edit')return null;
       if(command==='get_app_status')return {captureAvailable:true};
       if(command==='get_desktop_settings')return {captureShortcut:'CommandOrControl+Shift+2',pinShortcut:'CommandOrControl+Alt+3',startInTray:false,autostart:false};
       if(command==='set_editor_state')return;

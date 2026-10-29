@@ -22,6 +22,19 @@ test('prediction chooses smallest containing visible rectangle, never an offscre
   assert.equal(chooseRegion({ x: NaN, y: 0 }, regions, size), null);
 });
 
+test('native control geometry takes precedence only inside the front window at the current pointer', () => {
+  const size = { width: 1200, height: 800 }, point = { x: 160, y: 130 };
+  const front = { x: 100, y: 80, width: 600, height: 400, label: '窗口' };
+  const edge = { x: 150, y: 120, width: 40, height: 30, label: '边缘' };
+  const element = { x: 140, y: 110, width: 120, height: 70, label: '控件' };
+  assert.equal(captureRegionsAt(point, [front], [edge], size, element)[0], element);
+  for (const invalid of [{ ...element, x: 50, width: 300 }, { ...element, x: 200 }, { ...element, width: NaN }, { ...element, height: 0 }]) {
+    assert.equal(captureRegionsAt(point, [front], [edge], size, invalid)[0], edge);
+  }
+  assert.equal(captureRegionsAt(point, [], [edge], size, element)[0], edge);
+  assert.equal(captureRegionsAt(point, [front], [edge], size, { ...front, label: '控件' }).filter(r => r.width === front.width).length, 1);
+});
+
 test('local prediction finds bounded high-contrast rectangles from original fixture pixels', () => {
   const width = 200, height = 160;
   const data = new Uint8ClampedArray(width * height * 4).fill(255);
@@ -32,6 +45,45 @@ test('local prediction finds bounded high-contrast rectangles from original fixt
   assert.deepEqual(detectRegions(data, width, height), [{ x: 40, y: 30, width: 120, height: 90, label: '边缘预测区域', kind: 'edge' }]);
   assert.deepEqual(detectRegions(new Uint8ClampedArray(4), width, height), []);
   assert.deepEqual(detectRegions(new Uint8ClampedArray(width * height * 4).fill(255), width, height), []);
+});
+
+test('semantic parent candidates preserve native ranking and deduplicate the host while rejecting stale geometry', () => {
+  const size = {width: 800, height: 600}, point = {x: 110, y: 100};
+  const host = {x: 50, y: 50, width: 500, height: 400, label: '窗口'};
+  const button = {x: 100, y: 80, width: 160, height: 40, label: '控件'};
+  const pane = {x: 80, y: 60, width: 300, height: 200, label: '控件'};
+  const choices = captureRegionsAt(point, [host], [], size, [button, pane, {...host, label:'控件'}, button, {...button,x:700}]);
+  assert.deepEqual(choices.slice(0, 3), [button,pane,{...host,label:'控件'}]);
+  assert.equal(choices.length, 4);
+  assert.deepEqual(captureRegionsAt({x:600,y:500},[host],[],size,[button,pane]), [{x:0,y:0,...size,label:'整个画面'}]);
+});
+
+test('parent selection chooses the nearest enclosure and never crosses or shrinks the semantic hit', () => {
+  const size = { width: 800, height: 600 }, point = { x: 120, y: 100 };
+  const button = { x: 100, y: 80, width: 160, height: 40, label: 'button' };
+  const panel = { x: 80, y: 60, width: 300, height: 200, label: 'panel' };
+  const host = { x: 50, y: 50, width: 500, height: 400, label: 'window' };
+  const tiny = { x: 110, y: 90, width: 20, height: 20, label: 'text edge' };
+  const crossing = { x: 100, y: 90, width: 100, height: 200, label: 'crossing edge' };
+  const enclosing = { x: 90, y: 70, width: 180, height: 60, label: 'enclosing edge' };
+  const chain = captureRegionsAt(point, [host], [tiny, enclosing, crossing], size, [button, panel, button]);
+  assert.deepEqual(chain.map(r => r.label), ['button', 'enclosing edge', 'panel', 'window', '整个画面']);
+  // The same rule also applies to pure pixel fallback; a larger crossing box is not a parent.
+  assert.deepEqual(captureRegionsAt(point, [host], [enclosing, crossing], size).map(r => r.label), ['enclosing edge', 'window', '整个画面']);
+});
+
+test('a near-full-screen pixel edge retains the exact full-screen endpoint', () => {
+  const size = { width: 800, height: 600, dataUrl: 'fixture-image-must-not-enter-candidate', elementDetection: true, regions: [] };
+  const edge = { x: 1, y: 1, width: 798, height: 598, label: 'near-full edge' };
+  assert.deepEqual(captureRegionsAt({ x: 300, y: 200 }, [], [edge], size), [edge, { x: 0, y: 0, width: 800, height: 600, label: '整个画面' }]);
+});
+
+test('a near-window pixel edge cannot swallow the precise host in the enclosing path', () => {
+  const size = { width: 800, height: 600 };
+  const host = { x: 50, y: 50, width: 500, height: 400, label: 'host' };
+  const inner = { x: 100, y: 100, width: 100, height: 60, label: 'inner' };
+  const nearHost = { x: 51, y: 51, width: 498, height: 398, label: 'near-host edge' };
+  assert.deepEqual(captureRegionsAt({ x: 120, y: 120 }, [host], [inner, nearHost], size), [inner, nearHost, host, { x: 0, y: 0, ...size, label: '整个画面' }]);
 });
 
 function fixture(width: number, height: number) {

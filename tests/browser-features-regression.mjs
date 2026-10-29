@@ -134,6 +134,55 @@ try {
   assert.ok(savedMask.mask.width > 2 && savedMask.mask.height > 2);
   record('zero-area manual redactions are ignored and a real mask serializes as schema 2');
 
+  const legacyMasks = await page.evaluate(async () => {
+    const s = document.querySelector('canvas[aria-label="图片编辑画布"]').__vueParentComponent.setupState;
+    const { renderImage, renderPreview } = await import('/src/editor.ts');
+    const { parseSession } = await import('/src/session.ts');
+    const original = JSON.stringify(s.annotations), valid = JSON.parse(original);
+    const empty = { ...valid.at(-1), id: 'legacy-empty', x: 100.5, y: 100.5, width: 0, height: 80 };
+    const variants = [];
+    for (const scale of [1, 2]) for (const crop of [undefined, { x: 90, y: 90, width: 220, height: 180 }]) {
+      const options = { scale, crop, stickers: s.stickerImages };
+      for (const preview of [false, true]) {
+        const render = objects => preview
+          ? renderPreview(s.image, s.size, objects, s.style, options, { width: 400, height: 300 })
+          : renderImage(s.image, s.size, objects, s.style, options);
+        const expected = render(valid).toDataURL(), actual = render([...valid, empty, { ...empty, id: 'legacy-horizontal', width: 80, height: 0 }]).toDataURL();
+        variants.push({ scale, cropped: !!crop, preview, identical: actual === expected });
+      }
+    }
+    s.checkpoint(); s.annotations = [...valid, empty];
+    const session = parseSession(await s.getSession());
+    const saved = session.documents.find(d => d.id === session.currentId).state.annotations;
+    const preserved = JSON.stringify(saved) === original && s.annotations.at(-1).id === empty.id;
+    s.undo(); s.redo(); s.draw();
+    const historySafe = s.annotations.at(-1).id === empty.id && !s.renderError;
+    s.undo(); s.draw();
+    return { variants, preserved, historySafe, restored: JSON.stringify(s.annotations) === original };
+  });
+  assert.ok(legacyMasks.variants.every(result => result.identical));
+  assert.ok(legacyMasks.preserved && legacyMasks.historySafe && legacyMasks.restored);
+  record('legacy empty masks preserve exact preview/export pixels, backup and undo/redo', legacyMasks);
+
+  const renderFeedback = await page.evaluate(async () => {
+    const s = document.querySelector('canvas[aria-label="图片编辑画布"]').__vueParentComponent.setupState;
+    const original = JSON.parse(JSON.stringify(s.annotations));
+    s.feedback('保存失败：测试目标不可写', true);
+    s.annotations = [...original, { ...original.at(-1), id: 'invalid-negative', width: -10 }];
+    s.draw(); await Promise.resolve();
+    const failed = s.renderError === '遮挡区域尺寸必须大于零' && document.querySelector('[role="status"]').textContent.includes('遮挡区域尺寸必须大于零');
+    s.annotations = original; s.draw(); await Promise.resolve();
+    const recovered = !s.renderError && document.querySelector('[role="status"]').textContent.includes('保存失败：测试目标不可写') && document.querySelector('[role="status"]').classList.contains('error');
+    const image = s.image;
+    s.renderError = '旧预览错误'; s.image = null; s.draw();
+    const emptySessionCleared = !s.renderError;
+    s.image = image; s.draw();
+    s.feedback('测试绘制已恢复');
+    return { failed, recovered, emptySessionCleared };
+  });
+  assert.ok(renderFeedback.failed && renderFeedback.recovered && renderFeedback.emptySessionCleared);
+  record('render errors clear after recovery without swallowing save failures', renderFeedback);
+
   await clickText('图片美化'); await input('渐变起始颜色', '#123456'); await input('渐变结束颜色', '#aabbcc'); await input('渐变角度', '45', 'change'); await input('四周留白', '48');
   await input('美化预设名称', 'QA原创渐变'); await click('.preset-save button');
   await click('button[aria-label="极光漫游"]'); await clickText('QA原创渐变');

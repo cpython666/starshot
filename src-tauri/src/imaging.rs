@@ -140,6 +140,25 @@ pub fn payload(image: &DynamicImage, name: String) -> Result<ImagePayload, Strin
     })
 }
 
+// Match the pin's CSS rotate(...deg) scaleX(...): flip the source first,
+// then rotate clockwise. Window size and preview opacity never affect pixels.
+pub fn orient_pin(
+    image: DynamicImage,
+    rotation: u16,
+    flipped: bool,
+) -> Result<DynamicImage, String> {
+    if ![0, 90, 180, 270].contains(&rotation) {
+        return Err("贴图方向应为 0°、90°、180° 或 270°".into());
+    }
+    let image = if flipped { image.fliph() } else { image };
+    Ok(match rotation {
+        90 => image.rotate90(),
+        180 => image.rotate180(),
+        270 => image.rotate270(),
+        _ => image,
+    })
+}
+
 // The overlay may supply its flattened annotations, but never a different-sized image
 // or a rectangle outside the frozen frame owned by that window.
 pub fn capture_selection(
@@ -218,6 +237,29 @@ pub fn intersect_region(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pin_exports_preserve_source_pixels_alpha_and_display_orientation() {
+        let source = DynamicImage::ImageRgba8(image::RgbaImage::from_fn(3, 2, |x, y| {
+            let id = (y * 3 + x + 1) as u8;
+            image::Rgba([id, 20, 30, id * 40])
+        }));
+        for (rotation, flipped, size, expected) in [
+            (0, false, (3, 2), vec![1, 2, 3, 4, 5, 6]),
+            (0, true, (3, 2), vec![3, 2, 1, 6, 5, 4]),
+            (90, false, (2, 3), vec![4, 1, 5, 2, 6, 3]),
+            (90, true, (2, 3), vec![6, 3, 5, 2, 4, 1]),
+            (180, false, (3, 2), vec![6, 5, 4, 3, 2, 1]),
+            (270, false, (2, 3), vec![3, 6, 2, 5, 1, 4]),
+        ] {
+            let result = orient_pin(source.clone(), rotation, flipped)
+                .unwrap()
+                .into_rgba8();
+            assert_eq!(result.dimensions(), size);
+            assert_eq!(result.pixels().map(|p| p[0]).collect::<Vec<_>>(), expected);
+            assert!(result.pixels().all(|p| p[3] == p[0] * 40));
+        }
+        assert!(orient_pin(source, 45, false).is_err());
+    }
     #[test]
     fn png_roundtrip_and_crop_use_original_pixels() {
         let mut rgba = image::RgbaImage::new(4, 3);

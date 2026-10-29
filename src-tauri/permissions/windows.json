@@ -7,6 +7,8 @@
         "allow": [
           "start_capture",
           "get_current_image",
+          "take_pending_pin_edit",
+          "finish_pin_edit",
           "save_image",
           "copy_image",
           "pin_image",
@@ -39,22 +41,31 @@
     },
     {
       "identifier": "capture-commands",
-      "description": "A capture overlay can read only its own frozen frame, explicitly edit/copy/save/pin its selection, or cancel that capture",
+      "description": "A capture overlay can read only its own frozen frame, explicitly edit/copy/save/pin its selection, start and explicitly append/finish a scroll capture, or cancel that capture",
       "commands": {
         "allow": [
           "get_capture_frame",
+          "get_capture_element",
+          "invalidate_capture_element",
+          "native_smoke_report",
+          "native_smoke_move",
+          "native_integration_record",
           "finish_capture",
+          "begin_scroll_capture",
+          "append_scroll_capture",
+          "finish_scroll_capture",
           "cancel_capture"
         ]
       }
     },
     {
       "identifier": "pin-commands",
-      "description": "A pin can read and control only itself",
+      "description": "A pin can read, control, and explicitly copy/save/edit only its own image",
       "commands": {
         "allow": [
           "get_pin_image",
-          "pin_action"
+          "pin_action",
+          "pin_export"
         ]
       }
     }

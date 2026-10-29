@@ -17,6 +17,7 @@ const paths:Record<string,string>={
  number:'M9 3 7 21M17 3l-2 18M4 9h17M3 15h17',
  mosaic:'M3 3h6v6H3zm12 0h6v6h-6zM9 9h6v6H9zm-6 6h6v6H3zm12 0h6v6h-6z',
  crop:'M6 3v15h15M3 6h15v15', cursor:'m5 3 14 9-7 1-3 7z',
+ scroll:'M5 3h14v18H5zM12 7v10m-3-3 3 3 3-3',
  settings:'M12 8a4 4 0 1 0 0 8 4 4 0 1 0 0-8M12 2v3m0 14v3M2 12h3m14 0h3M5 5l2 2m10 10 2 2M5 19l2-2M17 7l2-2',
  history:'M3 11a9 9 0 1 1 2 7M3 4v7h7m2-4v6l4 2',
  close:'m6 6 12 12M6 18 18 6', check:'m5 12 4 4L19 6',

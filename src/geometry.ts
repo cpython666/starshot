@@ -1,7 +1,7 @@
 export interface Point { x: number; y: number }
 export interface Size { width: number; height: number }
 export interface Rect extends Point, Size {}
-export interface Region extends Rect { label: string; kind?: 'window' | 'edge' }
+export interface Region extends Rect { label: string; kind?: 'window' | 'edge' | 'element' }
 
 export function normalizeRect(start: Point, end: Point): Rect {
   return { x: Math.min(start.x, end.x), y: Math.min(start.y, end.y), width: Math.abs(end.x - start.x), height: Math.abs(end.y - start.y) };
@@ -30,18 +30,38 @@ export function chooseRegion(point: Point, regions: Region[], size: Size): Regio
   return chosen;
 }
 
-/** Windows are ordered front-to-back by xcap; edge candidates are sorted by area once. */
-export function captureRegionsAt(point: Point, windows: Region[], edges: Region[], size: Size): Region[] {
+/** Keep the strongest initial hit, then only strictly enclosing candidates. */
+export function captureRegionsAt(point: Point, windows: Region[], edges: Region[], size: Size, element?: Region | Region[]): Region[] {
   if (![point.x, point.y, size.width, size.height].every(Number.isFinite) || point.x < 0 || point.y < 0 || point.x >= size.width || point.y >= size.height) return [];
   const contains = (r: Rect) => point.x >= r.x && point.y >= r.y && point.x < r.x + r.width && point.y < r.y + r.height;
   const front = windows.find(contains);
   const choices = edges.filter(r => contains(r) && (!front || r.x >= front.x - 2 && r.y >= front.y - 2 && r.x + r.width <= front.x + front.width + 2 && r.y + r.height <= front.y + front.height + 2));
   const append = (region: Region) => {
-    if (!choices.some(r => Math.abs(r.x - region.x) <= 2 && Math.abs(r.y - region.y) <= 2 && Math.abs(r.width - region.width) <= 2 && Math.abs(r.height - region.height) <= 2)) choices.push(region);
+    // A near-identical pixel edge must not remove the exact window/full-screen endpoint.
+    if (!choices.some(r => r.x === region.x && r.y === region.y && r.width === region.width && r.height === region.height)) choices.push(region);
   };
   if (front) append(front);
-  append({ x: 0, y: 0, ...size, label: '整个画面' });
-  return choices;
+  append({ x: 0, y: 0, width: size.width, height: size.height, label: '整个画面' });
+  // A native control hit is stronger evidence than pixel edges, but never let it
+  // escape the foreground window or select a stale point after the cursor moves.
+  const semantic = (Array.isArray(element) ? element : element ? [element] : []).slice(0, 8).filter(r => front
+    && [r.x, r.y, r.width, r.height].every(Number.isFinite) && r.width >= 2 && r.height >= 2 && contains(r)
+    && r.x >= front.x && r.y >= front.y && r.x + r.width <= front.x + front.width && r.y + r.height <= front.y + front.height);
+  const candidates: Region[] = [];
+  for (const region of [...semantic, ...choices]) {
+    if (!candidates.some(r => r.x === region.x && r.y === region.y && r.width === region.width && r.height === region.height)) candidates.push(region);
+  }
+  // A smaller area alone is not a parent/child relationship. Retain the native
+  // semantic hit (e.g. button, not its text), then choose the nearest enclosure.
+  // Pixel candidates may supply an intermediate enclosing frame, never a crossing one.
+  const result = candidates.length ? [candidates[0]!] : [];
+  for (const region of candidates.sort((a, b) => a.width * a.height - b.width * b.height)) {
+    const previous = result.at(-1)!;
+    if (region.width * region.height > previous.width * previous.height
+      && region.x <= previous.x && region.y <= previous.y
+      && region.x + region.width >= previous.x + previous.width && region.y + region.height >= previous.y + previous.height) result.push(region);
+  }
+  return result;
 }
 
 /** Local straight-edge heuristic, not accessibility or semantic UI-element recognition. */

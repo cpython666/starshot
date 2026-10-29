@@ -29,6 +29,21 @@ const key = (key, extra={}) => page.evaluate(({key,extra})=>window.dispatchEvent
 
 await page.goto('http://127.0.0.1:1430/?view=capture');
 await wait(()=>document.querySelector('.capture-stage')?.__vueParentComponent.setupState.hovered?.width===560);
+assert.equal(await page.evaluate(()=>document.querySelectorAll('.capture-guides i').length),2);
+await key('h'); assert.equal(await page.evaluate(()=>!!document.querySelector('.capture-guides')),false);
+await key('h'); assert.equal(await page.evaluate(()=>document.querySelectorAll('.capture-guides i').length),2);
+const guidePosition=await page.evaluate(async()=>{
+  document.querySelector('.capture-stage').dispatchEvent(new PointerEvent('pointermove',{bubbles:true,clientX:250,clientY:180}));
+  await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+  return {x:document.querySelector('.guide-vertical').style.left,y:document.querySelector('.guide-horizontal').style.top,events:getComputedStyle(document.querySelector('.capture-guides')).pointerEvents};
+});
+assert.deepEqual(guidePosition,{x:'250px',y:'180px',events:'none'});
+await page.evaluate(async()=>{
+  const s=document.querySelector('.capture-stage').__vueParentComponent.setupState;
+  document.querySelector('.capture-stage').dispatchEvent(new PointerEvent('pointermove',{bubbles:true,clientX:600/s.frame.width*innerWidth,clientY:375/s.frame.height*innerHeight}));
+  await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+});
+results.push({name:'horizontal/vertical guides follow the pointer, H toggles them, and neither intercepts selection',pass:true});
 const firstCandidate=(await state()).hovered;
 await key('Tab'); const nextCandidate=(await state()).hovered;
 assert.notDeepEqual(nextCandidate,firstCandidate);
@@ -37,11 +52,13 @@ await key('Tab'); await gesture({x:600,y:375});
 assert.deepEqual((await state()).selected,{x:nextCandidate.x,y:nextCandidate.y,width:nextCandidate.width,height:nextCandidate.height});
 await click('重选区域'); await settle();
 assert.deepEqual((await state()).hovered,firstCandidate);
-results.push({name:'Tab cycles nested candidates in both directions and a stationary click keeps the keyboard choice',pass:true});
+results.push({name:'Tab expands along the enclosing path, Shift+Tab returns inward, and a stationary click keeps the keyboard choice',pass:true});
 await gesture({x:600,y:375});
 assert.deepEqual((await state()).selected,{x:266,y:239,width:560,height:320});
 assert.equal(await page.evaluate(()=>!!document.querySelector('canvas[aria-label="图片编辑画布"]')),false);
-assert.equal(await page.evaluate(()=>document.querySelectorAll('.capture-tools button').length),16);
+assert.equal(await page.evaluate(()=>document.querySelectorAll('.capture-tools button').length),17);
+assert.equal(await page.evaluate(()=>!!document.querySelector('.capture-guides')),false);
+assert.equal(await page.evaluate(()=>document.querySelector('button[aria-label="滚动长截图"]').disabled),true);
 results.push({name:'real worker identifies the original rounded card; selection shows inline tools without the main editor',pass:true});
 await click('实心遮盖'); await gesture({x:330,y:300}); await settle();
 assert.equal((await state()).error,''); assert.equal((await state()).annotations.length,0);
@@ -67,7 +84,7 @@ assert.equal(await page.evaluate(()=>!!document.querySelector('.capture-stage'))
 results.push({name:'text is placed inline; the full editor opens only on explicit more-editing',pass:true});
 
 const source='('+function(){
-  const m=window._captureMock={calls:[],mode:'cancel',hold:false};
+  const m=window._captureMock={calls:[],mode:'cancel',hold:false,scrollFrames:1};
   window.__TAURI_INTERNALS__={async invoke(command,args={}){
     m.calls.push({command,args:JSON.parse(JSON.stringify(args))});
     if(command==='get_capture_frame'){
@@ -82,6 +99,18 @@ const source='('+function(){
       return {completed:m.mode==='success',path:m.mode==='success'&&args.action==='save'?'/fixture-only/saved.png':undefined};
     }
     if(command==='cancel_capture')return;
+    if(command==='begin_scroll_capture'||command==='append_scroll_capture'){
+      if(m.mode==='error')throw Error('fixture: overlap not found');
+      if(command==='append_scroll_capture'&&m.mode!=='duplicate')m.scrollFrames++;
+      const c=document.createElement('canvas');c.width=300;c.height=180+(m.scrollFrames-1)*90;
+      const ctx=c.getContext('2d');ctx.fillStyle='#eaf0f6';ctx.fillRect(0,0,c.width,c.height);
+      ctx.fillStyle='#16324f';for(let i=0;i<m.scrollFrames;i++)ctx.fillRect(20,20+i*90,260,55);
+      return {width:c.width,height:c.height,frames:m.scrollFrames,previewDataUrl:c.toDataURL('image/png'),message:m.mode==='duplicate'?'画面未变化，已保留当前长截图。':'已采集，请继续滚动或完成。'};
+    }
+    if(command==='finish_scroll_capture'){
+      if(m.mode==='error')throw Error('fixture: save failed');
+      return {completed:m.mode==='success'};
+    }
     throw Error('Unexpected native command: '+command);
   }};
 }+')()';
@@ -123,7 +152,37 @@ try {
   });
   assert.ok(reads<=2,reads);
   results.push({name:'200 queued pointer moves coalesce into at most two tiny magnifier reads',pass:true,reads});
-  await click('取消截图').catch(async()=>key('Escape'));
+  await gesture({x:150,y:130},{x:449,y:309},true);
+  await click('实心遮盖');await gesture({x:170,y:150},{x:220,y:180});
+  assert.equal(await page.evaluate(()=>document.querySelector('button[aria-label="滚动长截图"]').disabled),true);
+  await click('撤销');await click('调整选区');
+  await page.evaluate(()=>{window._captureMock.mode='error'});
+  await click('滚动长截图');await wait(()=>document.querySelector('[role=alert]')?.textContent.includes('overlap not found'));
+  assert.deepEqual((await state()).selected,{x:150,y:130,width:300,height:180});
+  await page.evaluate(()=>{window._captureMock.mode='success'});
+  await click('滚动长截图');await wait(()=>!!document.querySelector('.scroll-preview img'));
+  assert.equal(await page.evaluate(()=>!!document.querySelector('.capture-stage')),false);
+  await page.cdp('Emulation.setDeviceMetricsOverride',{width:380,height:300,deviceScaleFactor:1,mobile:false});
+  const panelButton = async text => page.evaluate(text=>{const b=[...document.querySelectorAll('.scroll-capture button')].find(b=>b.textContent.trim()===text);if(!b||b.disabled)throw Error('Unavailable '+text);b.click()},text);
+  await panelButton('采集下一屏');await wait(()=>document.querySelector('.scroll-preview').textContent.includes('270'));
+  await page.evaluate(()=>{window._captureMock.mode='duplicate'});await panelButton('采集下一屏');
+  await wait(()=>document.querySelector('.scroll-status').textContent.includes('未变化'));
+  assert.ok(await page.evaluate(()=>document.querySelector('.scroll-preview').textContent.includes('已采集 2 屏')));
+  await page.evaluate(()=>{window._captureMock.mode='error'});await panelButton('采集下一屏');
+  await wait(()=>document.querySelector('[role=alert]')?.textContent.includes('overlap not found'));
+  assert.ok(await page.evaluate(()=>document.querySelector('.scroll-preview').textContent.includes('270')));
+  await page.evaluate(()=>{window._captureMock.mode='cancel'});await panelButton('保存');
+  await wait(()=>document.querySelector('.scroll-status').textContent.includes('已取消保存'));
+  await page.screenshot({path:dir+'/scroll-panel.png'});
+  assert.equal(await page.evaluate(()=>{const p=document.querySelector('.scroll-capture');return p.scrollHeight>p.clientHeight}),false);
+  await page.evaluate(()=>{window._captureMock.mode='success'});
+  for(const [label,action] of [['更多编辑','edit'],['贴到桌面','pin'],['复制完成','copy']]){
+    await panelButton(label);await wait(()=>!document.querySelector('.scroll-capture').getAttribute('aria-busy')||document.querySelector('.scroll-capture').getAttribute('aria-busy')==='false');
+    assert.equal(await page.evaluate(()=>window._captureMock.calls.at(-1).args.action),action);
+  }
+  await key('Escape');assert.equal(await page.evaluate(()=>window._captureMock.calls.at(-1).command),'cancel_capture');
+  results.push({name:'mock native scroll lifecycle: start rollback, annotation guard, append preview, duplicate/no-overlap preservation, save cancel, actions and Esc; 380x300 panel fits',pass:true});
+  await page.cdp('Emulation.clearDeviceMetricsOverride');
 } finally {await page.cdp('Page.removeScriptToEvaluateOnNewDocument',{identifier:preload.identifier});}
 await fs.writeFile(dir+'/results.json',JSON.stringify({layer:'real Chromium Vue/Canvas/worker plus mocked native command routing; no OS capture or clipboard',results},null,2));
 console.log({results});
