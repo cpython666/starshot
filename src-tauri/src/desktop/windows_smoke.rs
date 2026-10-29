@@ -242,6 +242,7 @@ fn overlay(
         })
         .invoke_handler(tauri::generate_handler![
             get_capture_frame,
+            capture_overlay_ready,
             get_capture_element,
             invalidate_capture_element,
             cancel_capture,
@@ -275,6 +276,7 @@ fn overlay(
             .ok_or("fixture outside screen")?;
             let label = "capture-native-smoke-0";
             let frame = Frame {
+                presented: false,
                 payload: FramePayload {
                     data_url: imaging::png_data_url(&image)?,
                     width: screen.width,
@@ -334,7 +336,6 @@ fn overlay(
             .build()?;
             window.set_position(tauri::PhysicalPosition::new(screen.x, screen.y))?;
             window.set_size(tauri::PhysicalSize::new(screen.width, screen.height))?;
-            window.show()?;
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_secs(35));

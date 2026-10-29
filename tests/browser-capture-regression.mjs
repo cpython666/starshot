@@ -98,7 +98,7 @@ const source='('+function(){
       if(m.mode==='error')throw Error('fixture: clipboard busy');
       return {completed:m.mode==='success',path:m.mode==='success'&&args.action==='save'?'/fixture-only/saved.png':undefined};
     }
-    if(command==='cancel_capture')return;
+    if(command==='cancel_capture'||command==='capture_overlay_ready')return;
     if(command==='begin_scroll_capture'||command==='append_scroll_capture'){
       if(m.mode==='error')throw Error('fixture: overlap not found');
       if(command==='append_scroll_capture'&&m.mode!=='duplicate')m.scrollFrames++;

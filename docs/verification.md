@@ -361,3 +361,12 @@ Homebrew真实安装到仓库忽略的隔离目录；brew info的安装版本、
 - 本机Node59项为58通过/1项minisign缺失跳过，Rust core31/desktop47、前端构建、cargo check/fmt通过。此次为取消入口删除恢复分支，没有增加镜像源码的测试，也未重复无关浏览器矩阵或让用户转发Windows测试；没有捕获真实桌面，尚未进行安装版原生取消实测。
 - 检查日志在忽略的`artifacts/capture-cancel-20261029/`。此修复需安装含新代码的应用后才改变日用行为，不能将源码推送当作已替换本机程序。
 - 独立`Starshot Cancel Verify` / `com.starshot.cancel-verify-20261029`的macOS arm64 app构建、严格codesign及归档二进制校验通过；未启动/安装，ad-hoc且未公证。二进制SHA-256 `923b730527cf44a5d6b1538845147f457f84caaf8e86e5e18bdf2da52174ed8b`，归档SHA-256 `d0991589a9561123038b88d1dcd562af109323d5dcd3b69d21489a32ebe71b56`。归档后移除本轮验证副本，日用应用哈希保持不变；本轮未执行Windows新构建。
+
+## 2026-10-29 · 截图启动闪屏与首帧就绪握手
+
+- 用户反馈开始截屏时全屏闪一下。源码发现覆盖层创建/定位后立刻show/focus，随后才动态加载Vue、获取截图和解码PNG；此顺序可先暴露原生空白底或capture-stage深色背景。没有捕获真实桌面逐帧归因，不能声称排除了主窗隐藏、显示器色彩或其他平台合成原因。
+- 改为隐藏覆盖层等待实际DOM截图img.decode与Vue nextTick完成；前端调用仅capture授权的`capture_overlay_ready`，成功回执后才启动控件查询和像素Worker。原生命令在后台等待operation，确认唯一窗口label仍活跃、非长截图且非退出状态，再show/focus并标记presented；不持帧锁调用窗口API，不以固定延时或双rAF掩盖未完成解码。
+- 解码或初始化失败通过同一命令的error参数清理并报告错误。原生按当次labels监测10秒启动期限，取消/就绪后结束，超时拿到operation后再核对身份，防止旧超时/旧通知关闭新截图。隐藏主窗后的180ms合成等待保留，以免把编辑器截进去。两个Windows验收入口与ACL已适配，但本轮未运行Windows原生矩阵，也未要求用户继续转发测试。
+- 本机Node59项为58通过/1项minisign缺失跳过，Rust core31/desktop47、cargo check/fmt和前端生产构建通过。Ego Chromium悬浮10组与截图9组通过；新增延迟实际图片解码、延迟显示回执、禁用rAF及解码失败用例，断言未就绪时无显示通知/控件查询/Worker，通知时图片complete/naturalWidth与候选DOM已就绪。
+- 真实WKWebView载入生产dist与Worker，8/8通过、stderr为空，新增同样的初始化双闸门/失败检查。禁用rAF是测试注入，所有图片为原创固定像素、原生IPC为模拟；这不等同真实桌面或原生窗口合成首帧视觉实测。测试证据保存在忽略的`artifacts/capture-flash-20261029/`，没有真实截图或剪贴板数据。
+- 最终独立`Starshot Startup Verify` / `com.starshot.startup-verify-20261029`的macOS arm64 app构建、严格codesign及归档二进制校验通过，未启动/安装，ad-hoc且未公证。二进制SHA-256 `04bd0ce98f0e6147046e418341793fe96c2391a20f3374f7668d9e2d87c44d4c`，归档SHA-256 `b6d34d96016a16352b56d9f6aff3b92fc03be7d7aaedabeff18a820dfbb82e8a`；核验后移除本轮可运行验证副本，日用应用哈希保持不变。源码修复不代表已替换用户正在运行的应用。

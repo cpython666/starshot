@@ -17,6 +17,7 @@ const emit = defineEmits<{ captured: [image: { dataUrl: string; width: number; h
 const props = withDefaults(defineProps<{ demo?: boolean }>(), { demo: false })
 const desktop = !props.demo && '__TAURI_INTERNALS__' in window
 const stage = ref<HTMLElement>()
+const captureImage = ref<HTMLImageElement>()
 const magnifier = ref<HTMLCanvasElement>()
 const preview = ref<HTMLCanvasElement>()
 const toolbar = ref<HTMLElement>()
@@ -70,6 +71,7 @@ let probeRequest = 0
 let elementTimer = 0
 let elementToken = 0
 let elementBusy = false
+let presented = false
 let pointerInside = false
 let keyboardCandidate = false
 let keyboardChoices: Region[] = []
@@ -131,7 +133,7 @@ function stopElementQuery() {
 }
 function scheduleElementQuery() {
   stopElementQuery(); elementRegion.value = []
-  if (!desktop || !frame.value?.elementDetection || selected.value || shiftHeld.value || busy.value || scrolling.value) return
+  if (!presented || !desktop || !frame.value?.elementDetection || selected.value || shiftHeld.value || busy.value || scrolling.value) return
   const token = elementToken, point = { x: pointer.value.x, y: pointer.value.y }
   const query = async () => {
     if (!mounted || token !== elementToken) return
@@ -464,8 +466,12 @@ onMounted(async () => {
     const next = desktop ? await invoke<Frame>('get_capture_frame') : { dataUrl: '/demo-workspace.svg', width: 1200, height: 750, scaleFactor: 1, regions: [{ x: 0, y: 0, width: 1200, height: 750, label: '整个演示画面' }] }
     if (!mounted) return
     frame.value = next
-    const image = new Image(); image.src = next.dataUrl; await image.decode()
-    if (!mounted) return
+    await nextTick()
+    if (!mounted || frame.value !== next) return
+    const image = captureImage.value
+    if (!image) throw Error('无法初始化截图画面')
+    await image.decode()
+    if (!mounted || frame.value !== next) return
     source = image
     resize()
     if (!desktop) {
@@ -483,11 +489,24 @@ onMounted(async () => {
     // Only the monitor containing the real stationary cursor starts a native query.
     // Other monitors retain the window/edge fallback until pointer entry/movement.
     pointerInside = !!frame.value?.pointer
+    const loadedFrame = frame.value
+    await nextTick()
+    if (!mounted || frame.value !== loadedFrame) return
+    updateMagnifier()
+    // Decode the displayed image and commit the UI before revealing its native
+    // window. Hidden WebViews may not run animation frames, so do not wait on rAF.
+    if (desktop) await invoke('capture_overlay_ready')
+    if (!mounted || frame.value !== loadedFrame) return
+    presented = true
     if (pointerInside) scheduleElementQuery()
-    await nextTick(); updateMagnifier()
     // Start even when an unfocused monitor's WebView has not scheduled a paint.
     probeRequest = window.setTimeout(() => { try { findEdges() } catch { regionNotice.value = '暂时无法识别小区域，可点击窗口或拖动框选。' } }, 0)
-  } catch (cause) { if (mounted) error.value = String(cause) }
+  } catch (cause) {
+    if (!mounted) return
+    ready.value = false
+    error.value = String(cause)
+    if (desktop) await invoke('capture_overlay_ready', { error: error.value }).catch(() => {})
+  }
 })
 onBeforeUnmount(() => {
   mounted = false; regionWorker?.terminate(); toolbarObserver?.disconnect()
@@ -500,7 +519,7 @@ onBeforeUnmount(() => {
 <template>
   <ScrollCapturePanel v-if="scrolling" :progress="scrollProgress" :busy="busy" :error="error" :status="status" @append="appendScroll" @finish="finishScroll" @cancel="cancel" />
   <main v-else ref="stage" class="capture-stage" aria-label="截图区域选择" :class="{ 'is-dragging': dragging }" @pointerenter="move" @pointermove="move" @pointerleave="leave" @pointerdown="begin($event)" @pointerup="end" @pointercancel="abortPointer" @contextmenu.prevent="cancel">
-    <img v-if="frame" class="capture-source" :src="frame.dataUrl" alt="当前冻结的屏幕画面" draggable="false" />
+    <img v-if="frame" ref="captureImage" class="capture-source" :src="frame.dataUrl" alt="当前冻结的屏幕画面" draggable="false" />
     <div v-if="!currentRect" class="capture-shade" />
     <div v-if="currentRect" class="capture-selection" :class="{ 'is-selected': selected, 'is-drawing': tool !== 'cursor' }" :style="selectionStyle" @pointerdown.stop="begin($event, selected ? 'move' : 'new')" @dblclick.stop="tool === 'cursor' && perform('copy')">
       <canvas v-show="selected && (annotations.length || draft)" ref="preview" class="capture-edit-preview" aria-label="截图标注预览" />

@@ -418,7 +418,7 @@ pub(crate) fn run_if_requested() -> bool {
         lock(&state.editor)?.released = true;
         let app = tauri::Builder::default().manage(state).manage(Updates::new())
             .manage(Integration { directory:directory.clone(), fixtures, records:Mutex::new(HashMap::new()), pixel_calls:AtomicU64::new(0), calls:Mutex::new(HashMap::new()), clock:Instant::now(), moves:Mutex::new(Vec::new()) })
-            .invoke_handler(tauri::generate_handler![get_capture_frame,get_capture_element,invalidate_capture_element,super::cancel_capture,native_integration_record])
+            .invoke_handler(tauri::generate_handler![get_capture_frame,get_capture_element,invalidate_capture_element,super::capture_overlay_ready,super::cancel_capture,native_integration_record])
             .setup(move |app| {
                 let handle=app.handle().clone();
                 std::thread::spawn(move || {

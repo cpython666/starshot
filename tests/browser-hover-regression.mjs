@@ -7,11 +7,21 @@ if (!Number.isInteger(config?.spaceId) || !config.page) throw Error('Pass an exi
 const page = (await taskSpace(config.spaceId)).page(config.page), results = [];
 const dir = fileURLToPath(new URL('../artifacts/hover-detection/', import.meta.url));
 await fs.mkdir(dir, { recursive: true });
-const wait = fn => page.waitForFunction(fn, undefined, { timeout: 15_000 });
+// Startup cases deliberately suppress page rAF callbacks, including default polling.
+const wait = fn => page.waitForFunction(fn, undefined, { timeout: 15_000, polling: 25 });
 const key = (key, type = 'keydown', extra = {}) => page.evaluate(({ key, type, extra }) => window.dispatchEvent(new KeyboardEvent(type, { key, bubbles: true, cancelable: true, ...extra })), { key, type, extra });
 const preload = await page.cdp('Page.addScriptToEvaluateOnNewDocument', { source: '(' + function () {
   const params = new URLSearchParams(location.search);
-  const m = window._hoverMock = { queries: [], generations: [], invalidations: [], unexpected: [], held: [], hold: false, enabled: params.has('controls') };
+  const m = window._hoverMock = { queries: [], generations: [], invalidations: [], unexpected: [], held: [], presentations: [], presented: false, decoded: false, workers: 0, hold: false, enabled: params.has('controls') };
+  const decode = HTMLImageElement.prototype.decode;
+  HTMLImageElement.prototype.decode = async function () {
+    if (!this.classList.contains('capture-source')) return decode.call(this);
+    if (params.get('decode') === 'held') await new Promise(resolve => { m.releaseDecode = resolve; });
+    if (params.get('decode') === 'error') throw Error('fixture: displayed image decode failed');
+    await decode.call(this);
+    m.decoded = this.isConnected;
+  };
+  if (params.has('no-raf')) { window.requestAnimationFrame = () => 1; window.cancelAnimationFrame = () => {}; }
   if (params.get('worker') === 'constructor') window.Worker = class { constructor() { throw Error('fixture: worker disabled'); } };
   if (params.get('worker') === 'async') window.Worker = class {
     postMessage(value, transfer) { structuredClone(value, { transfer }); queueMicrotask(() => this.onerror?.(new ErrorEvent('error'))); }
@@ -21,6 +31,10 @@ const preload = await page.cdp('Page.addScriptToEvaluateOnNewDocument', { source
     postMessage() { m.releaseWorker = () => this.onmessage?.({ data: [params.has('parents') ? { x: 150, y: 130, width: 200, height: 100 } : { x: 100, y: 100, width: 400, height: 240 }] }); }
     terminate() {}
   };
+  const Worker = window.Worker;
+  window.Worker = class {
+    constructor(...args) { m.workers++; if (!m.presented) m.unexpected.push('worker-before-ready'); return new Worker(...args); }
+  };
   window.__TAURI_INTERNALS__ = { async invoke(command, args = {}) {
     if (command === 'get_capture_frame') {
       const c = document.createElement('canvas'); c.width = 960; c.height = 640;
@@ -29,8 +43,16 @@ const preload = await page.cdp('Page.addScriptToEvaluateOnNewDocument', { source
       return { dataUrl: c.toDataURL(), width: 960, height: 640, scaleFactor: 2, pointer: params.has('no-pointer') ? undefined : { x: 180, y: 160 },
         elementDetection: m.enabled, regions: params.has('blank') ? [] : [{ x: 50, y: 50, width: 800, height: 500, label: '窗口' }] };
     }
+    if (command === 'capture_overlay_ready') {
+      const image = document.querySelector('.capture-source');
+      m.presentations.push({ ...(args.error ? { error: args.error } : {}), decoded: m.decoded, imageReady: !!image?.isConnected && image.complete && image.naturalWidth === 960, uiReady: !!document.querySelector('.capture-selection') && !document.querySelector('.capture-loading') });
+      if (args.error) return;
+      if (params.get('ready') === 'held') await new Promise(resolve => { m.releaseReady = resolve; });
+      m.presented = true; return;
+    }
     if (command === 'invalidate_capture_element') { m.invalidations.push(args.generation); return; }
     if (command === 'get_capture_element') {
+      if (!m.presented) m.unexpected.push('query-before-ready');
       m.queries.push(args.point);
       m.generations.push(args.generation);
       if (m.hold) return new Promise(resolve => m.held.push({ resolve, point: args.point }));
@@ -60,6 +82,28 @@ const move = (x, y) => page.evaluate(async ({ x, y }) => {
   await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 }, { x, y });
 try {
+  await page.goto('http://127.0.0.1:1430/?view=capture&controls&decode=held&ready=held&no-raf');
+  await wait(() => !!window._hoverMock?.releaseDecode);
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 120)));
+  assert.deepEqual(await page.evaluate(() => ({ presentations: window._hoverMock.presentations.length, queries: window._hoverMock.queries.length, workers: window._hoverMock.workers })), { presentations: 0, queries: 0, workers: 0 });
+  await page.evaluate(() => window._hoverMock.releaseDecode());
+  await wait(() => !!window._hoverMock?.releaseReady);
+  assert.deepEqual(await page.evaluate(() => window._hoverMock.presentations), [{ decoded: true, imageReady: true, uiReady: true }]);
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 120)));
+  assert.deepEqual(await page.evaluate(() => ({ queries: window._hoverMock.queries.length, workers: window._hoverMock.workers })), { queries: 0, workers: 0 });
+  await page.evaluate(() => window._hoverMock.releaseReady());
+  await wait(() => window._hoverMock.queries.length > 0 && window._hoverMock.workers > 0);
+  assert.deepEqual(await page.evaluate(() => window._hoverMock.unexpected), []);
+  results.push({ name: 'native presentation waits for the displayed image decode and committed UI; detection waits for acknowledgement without relying on animation frames', pass: true });
+
+  await page.goto('http://127.0.0.1:1430/?view=capture&controls&decode=error&no-raf');
+  await wait(() => window._hoverMock?.presentations.length === 1);
+  const failedStart = await page.evaluate(() => ({ calls: window._hoverMock.presentations, queries: window._hoverMock.queries.length, workers: window._hoverMock.workers, unexpected: window._hoverMock.unexpected }));
+  assert.match(failedStart.calls[0].error, /fixture: displayed image decode failed/);
+  assert.equal(failedStart.calls[0].decoded, false);
+  assert.deepEqual({ queries: failedStart.queries, workers: failedStart.workers, unexpected: failedStart.unexpected }, { queries: 0, workers: 0, unexpected: [] });
+  results.push({ name: 'displayed image decode failure reports initialization failure to native cleanup without revealing or starting detection', pass: true });
+
   await load('&blank');
   assert.equal((await selection()).pointer.x, 180);
   assert.equal((await selection()).pointer.y, 160);

@@ -109,6 +109,7 @@ struct CaptureMonitor {
     image_height: u32,
 }
 struct Frame {
+    presented: bool,
     image: DynamicImage,
     payload: FramePayload,
     monitor: CaptureMonitor,
@@ -404,6 +405,7 @@ fn begin_capture(app: &AppHandle) -> Result<()> {
                 width,
                 height,
                 frame: Frame {
+                    presented: false,
                     monitor: CaptureMonitor {
                         id: monitor.id().map_err(|e| e.to_string())?,
                         x,
@@ -422,6 +424,7 @@ fn begin_capture(app: &AppHandle) -> Result<()> {
                 },
             });
         }
+        let labels = prepared.iter().map(|entry| entry.label.clone()).collect();
         for entry in prepared {
             lock(&context.frames)?.insert(entry.label.clone(), entry.frame);
             let builder = WebviewWindowBuilder::new(
@@ -468,9 +471,8 @@ fn begin_capture(app: &AppHandle) -> Result<()> {
                     .set_size(tauri::PhysicalSize::new(entry.width, entry.height))
                     .map_err(|e| e.to_string())?;
             }
-            window.show().map_err(|e| e.to_string())?;
-            window.set_focus().map_err(|e| e.to_string())?;
         }
+        watch_capture_startup(app.clone(), labels);
         Ok(())
     })();
     if result.is_err() {
@@ -478,6 +480,75 @@ fn begin_capture(app: &AppHandle) -> Result<()> {
         show_main(app);
     }
     result
+}
+
+fn watch_capture_startup(app: AppHandle, labels: Vec<String>) {
+    tauri::async_runtime::spawn_blocking(move || {
+        let context = app.state::<Context>();
+        let pending = || {
+            context.frames.lock().is_ok_and(|frames| {
+                labels
+                    .iter()
+                    .any(|label| frames.get(label).is_some_and(|frame| !frame.presented))
+            })
+        };
+        let started = Instant::now();
+        while pending() {
+            if started.elapsed() >= Duration::from_secs(10) {
+                // Recheck after acquiring the operation lock: an old timeout must
+                // not close a later capture, or race a successful ready message.
+                if let Ok(_operation) = context.operation.lock() {
+                    if pending() {
+                        let _ = clear_capture(&app);
+                        report_error(&app, "截图界面加载超时，请重新截图。");
+                    }
+                }
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    });
+}
+
+#[tauri::command]
+async fn capture_overlay_ready(
+    app: AppHandle,
+    window: WebviewWindow,
+    error: Option<String>,
+) -> Result<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let context = app.state::<Context>();
+        // The builder must finish positioning all hidden windows before any show.
+        let _operation = lock(&context.operation)?;
+        context.ensure_not_exiting()?;
+        if lock(&context.scroll)?.is_some() {
+            return Err("长截图已开始".into());
+        }
+        let presented = lock(&context.frames)?
+            .get(window.label())
+            .ok_or("截图会话已结束")?
+            .presented;
+        if let Some(error) = error {
+            clear_capture(&app)?;
+            report_error(
+                &app,
+                &format!(
+                    "截图界面加载失败：{}",
+                    error.chars().take(500).collect::<String>()
+                ),
+            );
+        } else if !presented {
+            // Vue has decoded the actual displayed image and committed the DOM.
+            window.show().map_err(|e| e.to_string())?;
+            window.set_focus().map_err(|e| e.to_string())?;
+            if let Some(frame) = lock(&context.frames)?.get_mut(window.label()) {
+                frame.presented = true;
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|_| "显示截图界面失败")?
 }
 
 fn capture_pixels(
@@ -2342,6 +2413,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             start_capture,
             get_capture_frame,
+            capture_overlay_ready,
             get_capture_element,
             invalidate_capture_element,
             finish_capture,

@@ -96,6 +96,7 @@ mod capability_tests {
             ("plugin:updater|install", [false, false, false]),
             ("plugin:updater|download_and_install", [false, false, false]),
             ("get_capture_frame", [false, true, false]),
+            ("capture_overlay_ready", [false, true, false]),
             ("get_capture_element", [false, true, false]),
             ("invalidate_capture_element", [false, true, false]),
             ("native_smoke_report", [false, true, false]),

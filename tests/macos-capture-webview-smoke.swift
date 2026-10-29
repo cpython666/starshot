@@ -11,7 +11,7 @@ import WebKit
 
 final class CaptureSmoke: NSObject, NSApplicationDelegate, WKURLSchemeHandler, WKScriptMessageHandler, WKNavigationDelegate {
     let root: URL
-    let cases = ["module-worker", "worker-constructor-fallback", "worker-runtime-fallback", "native-element", "native-stale-tab", "worker-stale-tab"]
+    let cases = ["startup-gate", "startup-failure", "module-worker", "worker-constructor-fallback", "worker-runtime-fallback", "native-element", "native-stale-tab", "worker-stale-tab"]
     var caseIndex = 0
     var view: WKWebView?
     var window: NSWindow?
@@ -56,20 +56,48 @@ final class CaptureSmoke: NSObject, NSApplicationDelegate, WKURLSchemeHandler, W
         let scenario = String(data: try! JSONSerialization.data(withJSONObject: currentCase, options: [.fragmentsAllowed]), encoding: .utf8)!
         return """
         (() => {
-          const scenario = \(scenario), state = { workerPosted: false, workerReply: false, fallback: false, requests: 0, resolved: 0, cycled: false, cycleAt: 0, errors: [] };
+          const scenario = \(scenario), state = { workerPosted: false, workerReply: false, fallback: false, requests: 0, resolved: 0, cycled: false, cycleAt: 0, errors: [], readyCalls: 0, readyError: '', readyCompleted: false, domDecoded: false, workers: 0, decodeGateChecked: false, acknowledgementGateChecked: false };
           const report = body => window.webkit.messageHandlers.probe.postMessage(body);
           window.addEventListener('error', event => { state.errors.push(event.message || 'window-error'); report({event:'window-error',message:event.message||'',file:event.filename||''}); });
           window.addEventListener('unhandledrejection', event => { state.errors.push(String(event.reason)); report({event:'unhandled-rejection',message:String(event.reason)}); });
           document.addEventListener('securitypolicyviolation', event => { state.errors.push('CSP '+event.effectiveDirective); report({event:'csp',directive:event.effectiveDirective,blocked:event.blockedURI}); });
+          const decode = HTMLImageElement.prototype.decode;
+          HTMLImageElement.prototype.decode = async function() {
+            if (!this.classList.contains('capture-source')) return decode.call(this);
+            if (scenario === 'startup-gate') {
+              await new Promise(resolve => setTimeout(resolve, 180));
+              if (state.readyCalls || state.requests || state.workers) state.errors.push('presentation or detection ran before displayed image decode');
+              state.decodeGateChecked = true;
+            }
+            if (scenario === 'startup-failure') throw Error('fixture: displayed image decode failed');
+            await decode.call(this); state.domDecoded = this.isConnected;
+          };
+          if (scenario.startsWith('startup-')) {
+            window.requestAnimationFrame = () => 1;
+            window.cancelAnimationFrame = () => {};
+          }
           window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
             if (command === 'get_capture_frame') {
               const canvas = document.createElement('canvas'); canvas.width = 1200; canvas.height = 750;
               const ctx = canvas.getContext('2d'); ctx.fillStyle = '#ffffff'; ctx.fillRect(0,0,1200,750);
               ctx.fillStyle = '#2c3448'; ctx.fillRect(120,140,240,160);
-              return {dataUrl:canvas.toDataURL('image/png'),width:1200,height:750,scaleFactor:1,pointer:{x:200,y:200},elementDetection:scenario.startsWith('native-'),regions:[{x:40,y:40,width:1000,height:650,label:'模拟窗口'}]};
+              return {dataUrl:canvas.toDataURL('image/png'),width:1200,height:750,scaleFactor:1,pointer:{x:200,y:200},elementDetection:scenario.startsWith('native-')||scenario.startsWith('startup-'),regions:[{x:40,y:40,width:1000,height:650,label:'模拟窗口'}]};
+            }
+            if (command === 'capture_overlay_ready') {
+              state.readyCalls++;
+              if (args?.error) { state.readyError = args.error; return; }
+              const image = document.querySelector('.capture-source');
+              if (!state.domDecoded || !image?.isConnected || !image.complete || image.naturalWidth !== 1200 || document.querySelector('.capture-loading') || !document.querySelector('.capture-selection')) state.errors.push('native presentation ran before decoded image and committed UI');
+              if (scenario === 'startup-gate') {
+                await new Promise(resolve => setTimeout(resolve, 180));
+                if (state.requests || state.workers) state.errors.push('detection ran before native presentation acknowledgement');
+                state.acknowledgementGateChecked = true;
+              }
+              state.readyCompleted = true; return;
             }
             if (command === 'invalidate_capture_element') return;
             if (command === 'get_capture_element') {
+              if (!state.readyCompleted) state.errors.push('native query ran before presentation acknowledgement');
               state.requests++;
               if (args?.point?.x !== 200 || args?.point?.y !== 200) state.errors.push('initial pointer was not preserved');
               await new Promise(resolve => setTimeout(resolve, scenario === 'native-stale-tab' ? 400 : 10));
@@ -79,7 +107,9 @@ final class CaptureSmoke: NSObject, NSApplicationDelegate, WKURLSchemeHandler, W
             throw new Error('Unexpected IPC: '+command);
           }};
           const NativeWorker = window.Worker;
-          if (scenario === 'worker-constructor-fallback') {
+          if (scenario.startsWith('startup-')) {
+            window.Worker = class { constructor(...args) { state.workers++; if (!state.readyCompleted) state.errors.push('worker ran before presentation acknowledgement'); return new NativeWorker(...args); } };
+          } else if (scenario === 'worker-constructor-fallback') {
             window.Worker = class { constructor() { state.fallback = true; throw new Error('Intentional fixture constructor failure'); } };
           } else if (scenario === 'worker-runtime-fallback') {
             window.Worker = class { postMessage() { setTimeout(() => { state.fallback = true; this.onerror?.(new Event('error')); }, 10); } terminate() {} };
@@ -100,7 +130,12 @@ final class CaptureSmoke: NSObject, NSApplicationDelegate, WKURLSchemeHandler, W
             const label = document.querySelector('.capture-dimensions span')?.textContent?.trim() || '';
             const pointer = document.querySelector('.capture-magnifier small')?.textContent?.trim() || '';
             const error = document.querySelector('[role=alert]')?.textContent?.trim() || '';
-            const snapshot = {dimensions,label,pointer,error,ready:!!stage&&!document.querySelector('.capture-loading'),requests:state.requests,resolved:state.resolved};
+            const snapshot = {dimensions,label,pointer,error,ready:!!stage&&!document.querySelector('.capture-loading'),requests:state.requests,resolved:state.resolved,readyCalls:state.readyCalls,domDecoded:state.domDecoded,decodeGateChecked:state.decodeGateChecked,acknowledgementGateChecked:state.acknowledgementGateChecked};
+            if (scenario === 'startup-failure') {
+              if (!state.readyError) return snapshot;
+              const passed = state.readyCalls === 1 && state.readyError.includes('fixture: displayed image decode failed') && !state.readyCompleted && !state.domDecoded && !state.requests && !state.workers && !state.errors.length;
+              return {...snapshot,result:passed?'pass':'fail',reason:passed?'':state.errors.join('; ')||'failed initialization was not reported without presentation/detection'};
+            }
             if (state.errors.length || error) return {...snapshot,result:'fail',reason:state.errors.join('; ')||error};
             if (!stage) return snapshot;
             if (scenario === 'native-stale-tab' && !state.cycled && state.requests && dimensions === '240 × 160') {
@@ -110,7 +145,8 @@ final class CaptureSmoke: NSObject, NSApplicationDelegate, WKURLSchemeHandler, W
               window.dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',bubbles:true})); state.cycled = true; state.cycleAt = performance.now(); return snapshot;
             }
             let expected = '240 × 160', complete = dimensions === expected;
-            if (scenario === 'native-element') { expected = '80 × 30'; complete = dimensions === expected && state.resolved > 0; }
+            if (scenario === 'startup-gate') { expected = '80 × 30'; complete = dimensions === expected && state.resolved > 0 && state.decodeGateChecked && state.acknowledgementGateChecked && state.readyCompleted; }
+            else if (scenario === 'native-element') { expected = '80 × 30'; complete = dimensions === expected && state.resolved > 0; }
             else if (scenario === 'native-stale-tab') { expected = '1000 × 650'; complete = state.cycled && state.resolved > 0 && performance.now()-state.cycleAt > 100; }
             else if (scenario === 'worker-stale-tab') { expected = '1200 × 750'; complete = state.cycled && state.workerReply && performance.now()-state.cycleAt > 100; }
             if (scenario.includes('fallback')) complete = complete && state.fallback;
@@ -134,7 +170,7 @@ final class CaptureSmoke: NSObject, NSApplicationDelegate, WKURLSchemeHandler, W
             if let error { self.finishCase(false, ["reason": String(describing: error)]); return }
             guard var snapshot = value as? [String: Any] else { return }
             if let result = snapshot["result"] as? String {
-                let requiresWorker = !self.currentCase.contains("fallback")
+                let requiresWorker = !self.currentCase.contains("fallback") && self.currentCase != "startup-failure"
                 let success = result == "pass" && (!requiresWorker || self.workerRequests > 0)
                 if result == "pass" && !success { snapshot["reason"] = "production Worker was never requested through tauri scheme" }
                 self.finishCase(success, snapshot)

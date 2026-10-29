@@ -45,6 +45,7 @@
       "commands": {
         "allow": [
           "get_capture_frame",
+          "capture_overlay_ready",
           "get_capture_element",
           "invalidate_capture_element",
           "native_smoke_report",
