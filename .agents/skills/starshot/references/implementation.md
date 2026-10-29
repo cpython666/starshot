@@ -59,7 +59,7 @@
 - 用户提供的Snipaste悬浮说明图只作为交互参考。`PinWindow.vue`在图片区补多行HTML `title`及`aria-description`，说明双击关闭、拖动、滚轮缩放、修饰键滚轮透明度、右键菜单、空格与光圈设置入口；工具栏及菜单补动作、快捷键和鼠标穿透恢复方法。沿用浏览器/WebView原生提示，不增加覆盖图片的常驻层、计时器或事件拦截，不进入导出。Mac说明⌘或Ctrl，Windows说明Ctrl；双击行为并无设置项，不能把竞品路径当作本产品入口。`CaptureOverlay.vue`同时补齐重做、复制和贴图后的操作提示。
 - 2026-10-29按用户提供的Snipaste参考图增加贴图焦点光圈：活跃蓝色边框/柔光、失焦灰色边框/阴影，默认开启。`desktop_settings.rs`的`pin_halo`保存到本机桌面设置，旧配置缺字段时同样默认开启；`DesktopSettings.vue`保存按钮和右键菜单`pin_action("halo",0|1)`共用全局偏好。原生先成功持久化再更新内存并广播`pin-halo`，失败保留原值；设置页只在该事件中更新光圈字段，不覆盖未保存的快捷键等草稿。
 - `PinWindow.vue`使用`getCurrentWindow().onFocusChanged`监听Tauri原生焦点，事件目标限定当前Window；`get_pin_image`返回初始焦点、光圈偏好和12px逻辑边距。先注册监听再读取快照，按请求时的焦点/偏好事件计数拒绝覆盖较新事件；设置页读取或保存设置后的迟到响应也对光圈字段作同样保护。透明度通知改为`emit_to`当前窗口并以Window目标监听，避免一张贴图的透明度影响其他贴图。
-- 创建、最小尺寸和缩放窗口均保留四周固定12px透明空间；关闭光圈只移除装饰，不改变显示图片尺寸。光圈跟随按当前旋转方向计算的实际图片矩形，不包围透明留白；图片透明度与光圈分离。光圈和边距仅为CSS预览，`pin_export`仍读取原始payload，仅应用旋转/翻转，不将装饰写入复制、保存或送编辑器的图片。这批光圈代码未公开发布、未安装到日用应用；Windows原生焦点、混合DPI与显示仍待验收，实际检查层级见验证记录。
+- 创建、最小尺寸和缩放窗口均保留四周固定12px透明空间；关闭光圈只移除装饰，不改变显示图片尺寸。光圈跟随按当前旋转方向计算的实际图片矩形，不包围透明留白；图片透明度与光圈分离。光圈和边距仅为CSS预览，`pin_export`仍读取原始payload，仅应用旋转/翻转，不将装饰写入复制、保存或送编辑器的图片。这批光圈代码已安装本机日用应用、未公开发行；Windows原生焦点、混合DPI与显示仍待验收，实际检查层级见验证记录。
 - `pin_export`只接受动作、90°整数倍旋转和翻转，图片从调用贴图窗口自身状态读取；`imaging::orient_pin`先水平翻转再顺时针旋转，与CSS顺序一致且保留alpha与原始像素。预览缩放、透明度不写入成图。保存取消/失败保留贴图，成功显示实际路径；保存时暂时取消置顶并恢复。`pin_action`用try_lock，避免文件对话框持有operation锁时同步命令卡住主线程。
 - 贴图送编辑器使用单待处理请求、一次领取和导入后确认（`take_pending_pin_edit` / `finish_pin_edit`只授予main）。编码后复查忙碌，窗口创建失败真实返回；等待回执前释放operation锁，不写普通截图current。送入的是贴图扁平像素，作为新图片编辑，不重建原始标注对象。新主窗启动后领取，重复事件不重复导入；30秒到期、忙碌、解码失败或新导入取代均返回失败且保留贴图。前端在解码后提交前检查截止时间；待处理请求阻止空窗释放。
 - 主编辑器`resetStyle`一次checkpoint恢复DEFAULT_STYLE并清空本地背景，保留原图、裁剪与标注；递增backgroundVersion，迟到背景读取不能覆盖重置。顶部与帮助中的快捷键都使用实际shortcuts状态，保存失败回读原生绑定后同步提示。设置组件向主页面发出两个快捷键字符串的独立快照，不共享可变的设置对象，避免未保存输入提前改变已生效快捷键提示。
@@ -67,13 +67,13 @@
 
 ## 2026-10-29未发布悬浮预选修复
 
-- xcap 0.9.8的macOS窗口清单会因可选名称/共享状态而跳过有效几何；新`window_regions::snapshot`在创建覆盖层前一次读取CoreGraphics窗口的bounds/PID/layer/alpha/onScreen，不读取标题或应用名，不依赖共享状态。保持前后顺序，过滤自身PID、不可见/全透明、桌面负层及高于系统弹出菜单层的窗口；普通层的第三方全屏透明覆盖窗仍可能干扰命中。
+- xcap 0.9.8的macOS窗口清单会因可选名称/共享状态而跳过有效几何；新`window_regions::snapshot`在创建覆盖层前一次读取CoreGraphics窗口的bounds/PID/layer/alpha/onScreen，不读取标题或应用名，不依赖共享状态。保持前后顺序，过滤自身PID、不可见/全透明、桌面负层、Dock标准层级及高于系统弹出菜单层的窗口。Dock可能提供全屏但alpha=1的透明系统表面，因此不能只看alpha；通过CGWindowLevelForKey(7)动态取得层级并排除，不读应用名或改目标应用设置。普通层的第三方全屏透明覆盖窗仍可能干扰命中。
 - `get_capture_frame`附带实际鼠标位置。macOS Tao鼠标采用主屏缩放、窗口位置采用所在屏缩放，分别归一化再转为图片像素；负坐标/Retina/混合DPI仅有纯计算测试，原生多屏待验收。读不到或鼠标不在本屏时保留居中回退。
 - `get_capture_element`仅授权捕获窗口，校验当前会话/坐标/非长截图，使用已保存最前宿主，不允许前端任意指定PID/HWND。macOS仅在`AXIsProcessTrusted()`为真时调用`AXUIElementCopyElementAtPosition`与`AXPosition`/`AXSize`；不弹权限框、不读文字/角色、不遍历控件树。每个AX对象分别设置剩余80ms通信预算；无响应/失败回退。统一IPC返回候选数组，macOS仍只提供原有AX点命中。系统辅助功能开关由用户自行管理，设置页只读提示状态。
 - 前端80ms停止移动后查询，每个覆盖层最多一个在途请求；鼠标移动、离开当前屏、Shift手动、Tab选择、开始拖动和卸载使旧结果失效并通知原生取消。原生读取会话快照后释放operation与frames锁，等待期间不阻塞取消/退出；返回复查窗口标签、Arc会话身份、请求代数、点位、宿主及显示器。真实控件候选须包含指针且限定于宿主窗口，优先于像素框；不支持的应用或权限不足继续窗口/像素候选。macOS不含Snipaste的递归子元素备用分支，不能称同等识别率。
 - 全屏框改为内侧outline，避免被stage的overflow裁掉；Worker构造或运行失败从现有受限探测canvas回读并同步检测一次，不重建全尺寸canvas。初次任务用setTimeout安排，避免非活动屏双rAF阻塞；处理中/双路径失败显示状态。WKWebView实测同源module Worker可在现有CSP与tauri协议运行，无需blob或放宽CSP。
 - 2026-10-29针对启动闪屏修正覆盖层显示时序：原生创建/定位后保持hidden，前端实际截图img解码并提交DOM后调用仅capture可用的`capture_overlay_ready`。该命令在后台等待operation，核对当前唯一label，显示成功才标记Frame.presented；失败通知清理截图并报告错误。原生10秒看门检查只针对当次labels，取得operation后再查，取消或新会话不被旧超时误清理。不能依赖隐藏窗口的双rAF触发显示；隐藏主窗后的180ms合成等待仍保留。
-- `captureRegionsAt`从可信初始框建立完整包含的最近外层路径，拒绝交叉框与同框，保留精确外层而不被近似去重吞掉。Tab向外、Shift+Tab原路向内，两端停止；首次切换冻结路径，迟到Worker/原生结果不能覆盖，真实移动后重建。Tab及Shift事件先处理待执行rAF移动；Shift+Tab松开Shift仍保留选择。`tests/browser-hover-regression.mjs`与`tests/macos-capture-webview-smoke.swift`使用原创像素、模拟原生IPC，后者加载真实dist和Worker，不是截图/跨进程AX实测。规则依据及边界见[选区规则](../../../../docs/snipaste-selection-rules.md)，实际通过范围见验证记录。
+- `captureRegionsAt`从可信初始框建立完整包含的最近外层路径，拒绝交叉框与同框，保留精确外层而不被近似去重吞掉。像素候选必须完整位于最前宿主内，不再允许±2px越界，否则像素框外扩1px会令严格包含路径排除真实窗口。Tab向外、Shift+Tab原路向内，两端停止；首次切换冻结路径，迟到Worker/原生结果不能覆盖，真实移动后重建。Tab及Shift事件先处理待执行rAF移动；Shift+Tab松开Shift仍保留选择。`tests/browser-hover-regression.mjs`与`tests/macos-capture-webview-smoke.swift`使用原创像素、模拟原生IPC，后者加载真实dist和Worker，不是截图/跨进程AX实测。规则依据及边界见[选区规则](../../../../docs/snipaste-selection-rules.md)，实际通过范围见验证记录。
 - Windows v2源码已接入：覆盖层出现前保存HWND、PID、Z顺序、线程ID、进程创建时间及类atom；从保存的宿主 `ElementFromHandle` 建根，读取几何、ControlType与身份，不读Name/Value/Text、不遍历桌面。有界查询最多128节点/12层/8候选，300ms合作式预算；优先完整语义控件，无关兄弟重叠歧义时回退。目标身份或几何变化丢弃旧结果；跨PID元素被拒绝，合法多进程provider可能退回窗口/像素框。
 - Windows UIA在受Job Object管理的自建helper中运行无窗口COM MTA，每次查询使用唯一槽；跨屏争用时以5ms间隔可撤销地等待至多250ms，超限回退，成功拿槽后才开始原helper流程。750ms运行期限、撤销及退出终止/回收helper，不终止目标应用、不自动提权。300ms调用间预算不是COM硬超时；750ms也不含槽位等待、进程创建/系统调度/回收的全部耗时。不新增并发helper、MSAA或全局缓存；新增等槽测试尚待Windows执行，入口及验证范围见[Windows集成记录](../../../../docs/windows-uia-integration.md)。
 - 证据分层：首轮独立探针216次零误差不代表星镜集成；v2为真实UIA/Tauri/WebView2/IPC原创夹具46项检查，两屏分别运行、手工Frame和单宿主，没有生产begin_capture/窗口枚举/同时双屏；恢复阶段重启probe，不证明同一应用故障后恢复。合入版仍待Windows重验、安装和发布。Snipaste 2.11.3仅确认MSAA局部静态链与父子几何规则，其UIA使用和跨应用识别率仍未知，见[调查报告](../../../../docs/snipaste-detection-research.md)。
@@ -84,7 +84,7 @@
 
 - `main.ts`按窗口动态加载界面；空白主窗关闭使用前后端握手，先锁前端输入再释放WebView。任何图片、异步导入、OCR、更新或退出工作均阻止释放；macOS Reopen重建主窗。已有编辑关闭主窗仍保留会话。
 - 退出请求总是向存活编辑器取最新状态，备份失败不得退出，备份成功后先flush最新原生状态再确认。安装器重启使用专用路径，不被普通退出门控拦截。
-- macOS默认预定义Quit直接走terminate:，绕过Tauri ExitRequested。2026-10-29后续工作区用普通应用菜单项接管⌘Q，复用begin_exit，保留File/Edit/View/Window/Help菜单；独立应用用原创示例验证取消保留及备份退出。Dock菜单退出尚未接管，不将此路径算作已修复；已安装日用版本尚不含本轮修复。
+- macOS默认预定义Quit直接走terminate:，绕过Tauri ExitRequested。2026-10-29后续工作区用普通应用菜单项接管⌘Q，复用begin_exit，保留File/Edit/View/Window/Help菜单；独立应用用原创示例验证取消保留及备份退出。Dock菜单退出尚未接管，不将此路径算作已修复；当前日用本地构建已包含该修复。
 - OCR只在用户点击后运行，输入为当前裁剪与已绘制对象；异步结果校验图片ID和编辑revision。Windows worker嵌入固定模型，标准输入/输出传图与结果、90秒超时、2线程，结束后释放进程。模型来源/哈希/独立许可见 `src-tauri/models/ocrs/NOTICE.md`。Windows源码构建先运行 `npm run models:prepare`，固定字节数与SHA校验后写入Git忽略的模型路径；CI仅Windows执行同一步骤，macOS构建和测试无需模型，安装版仍完全内置离线模型。0.3.1因原S3地址403改从独立`ocr-models-v1`预览Release下载原版镜像，原哈希及两模型合计12,226,852字节不变；该构建依赖不进入应用稳定更新通道。
 - `redact`使用不透明黑色，覆盖所有对象后再绘制；2×渲染后按物理像素floor/ceil补绘防止插值暴露边缘。零面积草稿不进入渲染或会话。候选预览框和选中辅助线不进入导出。
 - 2026-10-28工作区补充旧会话兼容：`editor.ts::isEmptyRedaction`仅识别有限坐标、非负尺寸且至少一边为0的遮盖，共用渲染管线及内部`serializeSession`忽略这类无面积对象，不修改原状态/撤销历史；原数量限制保留。负尺寸、非有限值、坏贴纸和外部`parseSession`/Rust恢复校验仍拒绝。`App.vue`将预览错误独立保存，重绘成功或切到空会话时清除，不覆盖保存等操作失败。此补丁不属于已发布0.3.1；验证见验证记录末节。
