@@ -38,12 +38,20 @@ struct Metadata {
 }
 
 #[cfg(any(target_os = "macos", test))]
-fn candidate(item: Metadata, own_pid: u32, popup_layer: i32) -> Option<WindowBounds> {
+fn candidate(
+    item: Metadata,
+    own_pid: u32,
+    popup_layer: i32,
+    dock_layer: i32,
+) -> Option<WindowBounds> {
     // Normal, floating, modal and popup windows are useful candidates. Desktop
     // elements and higher overlay/dragging/screensaver/cursor layers are not.
+    // Dock can publish a screen-sized, visually transparent window with alpha=1.
+    // Its standard layer must not become the foreground host for every app.
     if item.pid == own_pid
         || !item.on_screen
         || item.layer < 0
+        || item.layer == dock_layer
         || item.layer > popup_layer
         || !item.alpha.is_finite()
         || item.alpha <= 0.0
@@ -425,6 +433,8 @@ mod macos {
         // kCGPopUpMenuWindowLevelKey = 11; query the OS rather than hardcoding
         // its level, so normal floating and modal panels are retained.
         let popup_layer = unsafe { CGWindowLevelForKey(11) };
+        // kCGDockWindowLevelKey = 7; use the OS level, not a product-name filter.
+        let dock_layer = unsafe { CGWindowLevelForKey(7) };
         let mut result = Vec::new();
         unsafe {
             for index in 0..CFArrayGetCount(list.0) {
@@ -462,7 +472,7 @@ mod macos {
                     width: rect.size.width,
                     height: rect.size.height,
                 };
-                if let Some(bounds) = candidate(item, own_pid, popup_layer) {
+                if let Some(bounds) = candidate(item, own_pid, popup_layer, dock_layer) {
                     result.push(bounds);
                 }
             }
@@ -594,7 +604,7 @@ mod tests {
     fn geometry_needs_neither_a_title_nor_a_sharing_permission() {
         // Metadata deliberately has no title/app-name/sharing-state fields.
         assert_eq!(
-            candidate(normal(), 42, 101),
+            candidate(normal(), 42, 101, 20),
             Some(WindowBounds {
                 native: None,
                 pid: 7,
@@ -608,10 +618,54 @@ mod tests {
         assert_eq!(
             panels
                 .into_iter()
-                .filter_map(|item| candidate(item, 42, 101))
+                .filter_map(|item| candidate(item, 42, 101, 20))
                 .count(),
             4
         );
+    }
+    #[test]
+    fn dock_surface_cannot_hide_normal_application_windows() {
+        let screen = Metadata {
+            x: 0.0,
+            y: 0.0,
+            width: 1200.0,
+            height: 800.0,
+            ..normal()
+        };
+        let app = Metadata {
+            x: 40.0,
+            y: 60.0,
+            width: 900.0,
+            height: 600.0,
+            ..normal()
+        };
+        let snapshot = [
+            Metadata {
+                layer: 20,
+                ..screen
+            },
+            app,
+            screen,
+        ];
+        let regions: Vec<_> = snapshot
+            .into_iter()
+            .filter_map(|item| candidate(item, 42, 101, 20))
+            .collect();
+        assert_eq!(regions.len(), 2);
+        assert_eq!(regions[0], candidate(app, 42, 101, 20).unwrap());
+        // A real full-screen application at the normal layer must still survive.
+        assert_eq!(regions[1], candidate(screen, 42, 101, 20).unwrap());
+        // Query the Dock layer dynamically, not a hardcoded numeric level.
+        assert!(candidate(
+            Metadata {
+                layer: 19,
+                ..screen
+            },
+            42,
+            101,
+            19
+        )
+        .is_none());
     }
     #[test]
     fn rejects_own_hidden_desktop_and_high_overlay_windows() {
@@ -653,7 +707,7 @@ mod tests {
                 ..normal()
             },
         ] {
-            assert_eq!(candidate(item, 42, 101), None);
+            assert_eq!(candidate(item, 42, 101, 20), None);
         }
     }
     #[test]
@@ -671,7 +725,7 @@ mod tests {
         ];
         let result: Vec<_> = windows
             .into_iter()
-            .filter_map(|item| candidate(item, 42, 101))
+            .filter_map(|item| candidate(item, 42, 101, 20))
             .collect();
         assert_eq!(
             result[0],

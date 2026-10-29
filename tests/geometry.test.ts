@@ -86,6 +86,21 @@ test('a near-window pixel edge cannot swallow the precise host in the enclosing 
   assert.deepEqual(captureRegionsAt({ x: 120, y: 120 }, [host], [inner, nearHost], size), [inner, nearHost, host, { x: 0, y: 0, ...size, label: '整个画面' }]);
 });
 
+test('pixel edges outside any host side cannot replace or extend the exact window', () => {
+  const size = { width: 800, height: 600 }, point = { x: 120, y: 120 };
+  const host = { x: 50, y: 50, width: 500, height: 400, label: 'host' };
+  const inner = { x: 100, y: 100, width: 100, height: 60, label: 'inner' };
+  const screen = { x: 0, y: 0, ...size, label: '整个画面' };
+  for (const edge of [
+    { ...host, x: 49, width: 501 }, { ...host, y: 49, height: 401 },
+    { ...host, width: 501 }, { ...host, height: 401 },
+    { ...host, x: 49, y: 49, width: 502, height: 402 },
+  ]) {
+    assert.deepEqual(captureRegionsAt(point, [host], [edge], size), [host, screen]);
+    assert.deepEqual(captureRegionsAt(point, [host], [inner, edge], size), [inner, host, screen]);
+  }
+});
+
 function fixture(width: number, height: number) {
   const data = new Uint8ClampedArray(width * height * 4).fill(255);
   function fill(x: number, y: number, w: number, h: number, color: number, radius = 0) {

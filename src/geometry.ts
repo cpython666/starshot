@@ -35,7 +35,8 @@ export function captureRegionsAt(point: Point, windows: Region[], edges: Region[
   if (![point.x, point.y, size.width, size.height].every(Number.isFinite) || point.x < 0 || point.y < 0 || point.x >= size.width || point.y >= size.height) return [];
   const contains = (r: Rect) => point.x >= r.x && point.y >= r.y && point.x < r.x + r.width && point.y < r.y + r.height;
   const front = windows.find(contains);
-  const choices = edges.filter(r => contains(r) && (!front || r.x >= front.x - 2 && r.y >= front.y - 2 && r.x + r.width <= front.x + front.width + 2 && r.y + r.height <= front.y + front.height + 2));
+  // Even a one-pixel overhang can prevent the exact host from enclosing the hit.
+  const choices = edges.filter(r => contains(r) && (!front || r.x >= front.x && r.y >= front.y && r.x + r.width <= front.x + front.width && r.y + r.height <= front.y + front.height));
   const append = (region: Region) => {
     // A near-identical pixel edge must not remove the exact window/full-screen endpoint.
     if (!choices.some(r => r.x === region.x && r.y === region.y && r.width === region.width && r.height === region.height)) choices.push(region);
