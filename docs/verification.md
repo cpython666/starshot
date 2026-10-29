@@ -370,3 +370,10 @@ Homebrew真实安装到仓库忽略的隔离目录；brew info的安装版本、
 - 本机Node59项为58通过/1项minisign缺失跳过，Rust core31/desktop47、cargo check/fmt和前端生产构建通过。Ego Chromium悬浮10组与截图9组通过；新增延迟实际图片解码、延迟显示回执、禁用rAF及解码失败用例，断言未就绪时无显示通知/控件查询/Worker，通知时图片complete/naturalWidth与候选DOM已就绪。
 - 真实WKWebView载入生产dist与Worker，8/8通过、stderr为空，新增同样的初始化双闸门/失败检查。禁用rAF是测试注入，所有图片为原创固定像素、原生IPC为模拟；这不等同真实桌面或原生窗口合成首帧视觉实测。测试证据保存在忽略的`artifacts/capture-flash-20261029/`，没有真实截图或剪贴板数据。
 - 最终独立`Starshot Startup Verify` / `com.starshot.startup-verify-20261029`的macOS arm64 app构建、严格codesign及归档二进制校验通过，未启动/安装，ad-hoc且未公证。二进制SHA-256 `04bd0ce98f0e6147046e418341793fe96c2391a20f3374f7668d9e2d87c44d4c`，归档SHA-256 `b6d34d96016a16352b56d9f6aff3b92fc03be7d7aaedabeff18a820dfbb82e8a`；核验后移除本轮可运行验证副本，日用应用哈希保持不变。源码修复不代表已替换用户正在运行的应用。
+
+## 2026-10-29 · 用户授权直接更新本机日用应用
+
+- 用户要求由代理直接更新后，先在原生应用点击「备份当前会话」，核实成功提示及恢复点出现，并仅以文件长度和SHA-256检查落盘完整性，没有输出图片内容。旧应用归档内二进制与原安装哈希一致，随后才退出旧进程。
+- 从已验证源码`21b7f2c`使用正常配置执行`npm run tauri -- build --bundles app`，得到`Starshot` / `com.starshot.desktop` / `0.3.1`的macOS arm64构建，严格codesign通过。替换`/Applications/Starshot.app`后逐字节哈希一致，新可执行文件SHA-256为`a80c9f1d9c94b7e068dd789be14d9c6b5be6df731680855016e30d888c28aa12`。正常启动的原生设置页可见默认开启的焦点光圈和新的退出保护说明。只归档构建副本后移除其可运行app，保留固定日用入口；没有创建tag、Release或更新Homebrew。
+- 首次启动的两项权限预检均未通过。沿用用户已有的Starshot权限修复授权，退出空会话新版，仅执行`ScreenCapture com.starshot.desktop`重置；系统设置添加固定路径时出现触控ID/密码验证，已请求用户自行完成。当前停在系统验证，重新登记、重新启动后的权限复核及恢复已备份会话尚未完成。不得把安装成功写成权限或截图全流程通过。
+- 本轮只重新构建正常标识安装包，没有产品代码变更；前轮自动与浏览器检查的边界不变。操作记录和新旧app归档仅在忽略的`artifacts/local-update-20261029/`；没有捕获真实桌面或读取剪贴板。
