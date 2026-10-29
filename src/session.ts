@@ -1,4 +1,5 @@
 import type { Annotation, EditorStyle } from './editor.ts';
+import { isEmptyRedaction } from './editor.ts';
 import type { Rect } from './geometry.ts';
 import { MAX_STICKER_PIXELS, stickerInfo, validateStickerBudget } from './objects.ts';
 
@@ -127,8 +128,15 @@ export function parseSession(serialized: string): Session {
 }
 
 export function serializeSession(session: Session): string {
+  // Only repair invisible legacy masks in the editor's own state, without mutating undo history.
+  const documents = session.documents.map(doc => {
+    const annotations = doc.state.annotations;
+    if (annotations.length > 2000) invalid('标注数量');
+    if (annotations.reduce((count, a) => count + (a.points?.length || 0), 0) > 100_000) invalid('会话标注点数过多');
+    return { ...doc, state: { ...doc.state, annotations: annotations.filter(a => !isEmptyRedaction(a)) } };
+  });
   // Round-trip validation also strips undo/redo and other runtime fields before persistence.
-  return JSON.stringify(parseSession(JSON.stringify(session)));
+  return JSON.stringify(parseSession(JSON.stringify({ ...session, documents })));
 }
 
 /** Decode every image before the caller atomically replaces the current in-memory session. */

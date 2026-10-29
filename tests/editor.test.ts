@@ -71,6 +71,32 @@ test('redaction rendering stays opaque and above later stickers, including cropp
     assert.deepEqual(canvases[1]!.events.find(event => event.operation === 'scale')?.args, [2, 2]);
     assert.deepEqual(canvases[1]!.events.filter(event => event.operation === 'fillRect').at(-1), { operation: 'fillRect', args: [4, 4, 12, 10], color: '#000000', alpha: 1 });
     assert.throws(() => renderImage(source, { width: 20, height: 20 }, [annotations[1]!], { ...DEFAULT_STYLE, shadow: 0 }), /尚未解码/);
+
+    const emptyMasks: Annotation[] = [[0, 4], [4, 0], [0, 0]].map(([width, height], i) => ({ ...base, id: `empty-${i}`, type: 'redact', width: width!, height: height! }));
+    const unchanged = structuredClone(emptyMasks);
+    const plain = { ...DEFAULT_STYLE, background: 'transparent' as const, padding: 0, radius: 0, shadow: 0, borderWidth: 0 };
+    const crop = { x: 3, y: 4, width: 12, height: 12 };
+    // Fractional coordinates must not let the final floor/ceil repaint turn an empty mask into a black line.
+    for (const scale of [1, 2] as const) {
+      const start = canvases.length;
+      renderImage(source, { width: 20, height: 20 }, emptyMasks, plain, { crop, scale });
+      assert.deepEqual(canvases.slice(start).flatMap(c => c.events).filter(e => e.operation === 'fillRect'), []);
+    }
+    const previewStart = canvases.length;
+    renderPreview(source, { width: 20, height: 20 }, emptyMasks, plain, { crop }, { width: 6, height: 6 });
+    assert.deepEqual(canvases.slice(previewStart).flatMap(c => c.events).filter(e => e.operation === 'fillRect'), []);
+    assert.deepEqual(emptyMasks, unchanged);
+
+    const smallMask: Annotation = { ...base, id: 'small', type: 'redact', width: .01, height: .01 };
+    const smallStart = canvases.length;
+    renderImage(source, { width: 20, height: 20 }, [...emptyMasks, smallMask], plain, { scale: 2 });
+    const fills = canvases.slice(smallStart).flatMap(c => c.events).filter(e => e.operation === 'fillRect');
+    assert.equal(fills.length, 2, 'a real small mask remains in both drawing passes');
+    assert.ok(fills.every(e => e.color === '#000000' && e.alpha === 1 && Number(e.args[2]) > 0 && Number(e.args[3]) > 0));
+    for (const change of [{ width: -1, height: 0 }, { width: 0, height: -1 }, { x: NaN, width: 0 }, { y: Infinity, height: 0 }, { width: NaN }, { height: Infinity }]) {
+      assert.throws(() => renderImage(source, { width: 20, height: 20 }, [{ ...smallMask, ...change }], plain), /无效坐标|尺寸必须大于零/);
+    }
+    assert.throws(() => renderImage(source, { width: 20, height: 20 }, Array.from({ length: 1001 }, () => emptyMasks[0]!), plain), /最多支持 1000/);
   } finally {
     if (originalDocument) globalThis.document = originalDocument;
     else Reflect.deleteProperty(globalThis, 'document');

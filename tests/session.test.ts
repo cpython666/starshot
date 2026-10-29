@@ -25,6 +25,42 @@ test('session round trip retains complete editable state and theme without incid
   assert.deepEqual(parseSession(serializeSession({ schemaVersion: 2, theme: 'sakura', currentId: '', documents: [] })), { schemaVersion: 2, theme: 'sakura', currentId: '', documents: [] });
 });
 
+test('internal backups omit only finite empty redactions across all documents without changing editor history', () => {
+  const session = fixture();
+  const base = { type: 'redact' as const, x: .2, y: .3, width: .01, height: .01, color: '#000000', lineWidth: 1 };
+  session.documents.push({ ...session.documents[0]!, id: 'other', state: { ...session.documents[0]!.state, annotations: [
+    { ...base, id: 'zero-width', width: 0 },
+    { ...base, id: 'zero-height', height: 0 },
+    { ...base, id: 'zero-both', width: 0, height: 0 },
+    { ...base, id: 'small-valid' },
+    { ...base, id: 'text', type: 'text', width: 0, height: 0, text: '保留文字' },
+  ] } });
+  const original = structuredClone(session), originalAnnotations = session.documents[1]!.state.annotations;
+  const restored = parseSession(serializeSession(session));
+  assert.deepEqual(session, original);
+  assert.equal(session.documents[1]!.state.annotations, originalAnnotations);
+  assert.deepEqual(restored.documents[0], session.documents[0], 'the current document and negative arrow direction survive');
+  assert.deepEqual(restored.documents[1]!.state.annotations, originalAnnotations.slice(3), 'small masks and zero-size text survive');
+  assert.throws(() => parseSession(JSON.stringify(session)), /尺寸必须大于零/, 'external restore data stays strict');
+});
+
+test('internal empty-mask repair preserves malformed object and original count limits', () => {
+  const base = { id: 'mask', type: 'redact' as const, x: 0, y: 0, width: 0, height: 1, color: '#000000', lineWidth: 1 };
+  for (const change of [{ width: -1 }, { height: -1 }, { x: NaN }, { y: Infinity }, { width: NaN }, { height: Infinity }]) {
+    const session = fixture(); session.documents[0]!.state.annotations = [{ ...base, ...change }];
+    assert.throws(() => serializeSession(session), /恢复点内容无效/);
+  }
+  for (const change of [{ width: 0 }, { dataUrl: 'data:image/png;base64,AAAA' }]) {
+    const session = fixture(); session.documents[0]!.state.annotations = [{ ...base, type: 'sticker', width: 1, dataUrl: pixel, ...change }];
+    assert.throws(() => serializeSession(session), /贴纸/);
+  }
+  const session = fixture();
+  session.documents[0]!.state.annotations = Array.from({ length: 2001 }, (_, i) => ({ ...base, id: `empty-${i}` }));
+  assert.throws(() => serializeSession(session), /标注数量/);
+  session.documents[0]!.state.annotations = [{ ...base, points: Array.from({ length: 100001 }, () => ({ x: 0, y: 0 })) }];
+  assert.throws(() => serializeSession(session), /标注点数过多/);
+});
+
 test('invalid schema, ids, source links, styles and crops fail before image decoding', () => {
   rejected(s => s.schemaVersion = 3, /会话版本/);
   rejected(s => s.theme = 'injected', /界面外观/);

@@ -14,6 +14,15 @@ export interface Annotation extends Rect {
   dataUrl?: string;
   rotation?: number;
 }
+
+/** A legacy empty mask covers no pixels; malformed or nonempty masks must still be checked. */
+export function isEmptyRedaction(annotation: Annotation): boolean {
+  return annotation.type === 'redact'
+    && [annotation.x, annotation.y, annotation.width, annotation.height].every(Number.isFinite)
+    && annotation.width >= 0 && annotation.height >= 0
+    && (annotation.width === 0 || annotation.height === 0);
+}
+
 export interface EditorStyle {
   background: 'gradient' | 'solid' | 'transparent' | 'image';
   backgroundColor: string;
@@ -218,6 +227,7 @@ function render(source: CanvasImageSource, size: Size, annotations: Annotation[]
   const style = sanitizeStyle(rawStyle);
   const layout = calculateLayout(size, style, options.crop, options.scale ?? 1);
   if (annotations.length > 1_000) throw new Error('单张图片最多支持 1000 个标注');
+  annotations = annotations.filter(annotation => !isEmptyRedaction(annotation));
   const crop = layout.crop;
   const picture = canvas(Math.max(1, Math.floor(crop.width * rasterScale)), Math.max(1, Math.floor(crop.height * rasterScale)));
   const pictureCtx = context(picture);
