@@ -72,10 +72,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        not(target_os = "windows"),
-        ignore = "Windows production engine; manually runnable on other platforms"
-    )]
     fn recognizes_generated_fixture() {
         let image =
             image::load_from_memory(include_bytes!("../../../tests/fixtures/ocr-latin.png"))

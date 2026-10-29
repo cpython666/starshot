@@ -183,10 +183,9 @@ fn platform_recognize(_: &DynamicImage) -> Result<Vec<OcrLine>, String> {
     Err("本地文字识别需要 macOS 或 Windows 桌面版".into())
 }
 
-#[cfg(all(feature = "desktop", any(target_os = "windows", test)))]
+#[cfg(all(feature = "desktop", target_os = "windows"))]
 mod offline;
-#[cfg(all(feature = "desktop", any(target_os = "windows", test)))]
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg(all(feature = "desktop", target_os = "windows"))]
 mod worker;
 
 /// Must run before Tauri initializes its single-instance and window state.

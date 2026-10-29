@@ -42,7 +42,6 @@ jobs:
           echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           node --input-type=module -e 'import { readFileSync } from "node:fs"; import { releaseNotes } from "./scripts/release-manifest.mjs"; releaseNotes(readFileSync("CHANGELOG.md", "utf8"), process.env.RELEASE_TAG.slice(1));'
       - run: npm ci --no-audit --no-fund
-      - run: npm run models:prepare
       - name: Install the signature verifier for real signing tests
         run: sudo apt-get update && sudo apt-get install --yes minisign
       - run: npm test
@@ -84,7 +83,9 @@ jobs:
         with:
           workspaces: src-tauri -> target
       - run: npm ci --no-audit --no-fund
-      - run: npm run models:prepare
+      - name: Prepare Windows-only OCR models
+        if: runner.os == 'Windows'
+        run: npm run models:prepare
       - run: npm run version:check -- '${{ needs.validate.outputs.tag }}'
       - run: npm test
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check

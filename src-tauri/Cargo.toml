@@ -19,6 +19,7 @@ required-features = ["desktop"]
 default = ["desktop"]
 desktop = ["dep:tauri", "dep:tauri-build", "dep:xcap", "dep:arboard", "dep:tauri-plugin-dialog", "dep:tauri-plugin-global-shortcut", "dep:tauri-plugin-single-instance", "dep:tauri-plugin-updater", "dep:tauri-plugin-autostart", "dep:objc2", "dep:objc2-foundation", "dep:objc2-vision", "dep:ocrs", "dep:rten"]
 updater-smoke = ["desktop", "tauri/test"]
+windows-uia-smoke = ["desktop"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -35,6 +36,9 @@ tauri-plugin-global-shortcut = { version = "2", optional = true }
 tauri-plugin-single-instance = { version = "2", optional = true }
 tauri-plugin-autostart = { version = "2", optional = true }
 tauri-plugin-updater = { version = "2.10", optional = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_UI_Accessibility", "Win32_UI_WindowsAndMessaging", "Win32_UI_HiDpi", "Win32_Graphics_Dwm", "Win32_System_Com", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Diagnostics_ToolHelp", "Win32_Security"] }
 ocrs = { version = "=0.12.2", default-features = false, optional = true }
 rten = { version = "=0.24.0", default-features = false, features = ["rten_format"], optional = true }
 

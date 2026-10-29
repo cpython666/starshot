@@ -29,11 +29,6 @@
   },
   "bundle": {
     "active": true,
-    "resources": [
-      "models/ocrs/NOTICE.md",
-      "models/ocrs/LICENSE-CC-BY-SA-4.0.txt",
-      "models/ocrs/LICENSE-OCR-CODE.txt"
-    ],
     "targets": "all",
     "icon": [
       "icons/32x32.png",
