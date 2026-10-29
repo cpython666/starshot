@@ -25,6 +25,8 @@
 
 Windows控件识别及helper源码位于[`src-tauri/src/window_regions/windows.rs`](src-tauri/src/window_regions/windows.rs)，公共截图界面为[`CaptureOverlay.vue`](src/components/CaptureOverlay.vue)。原生验收源码包含[`desktop/windows_integration.rs`](src-tauri/src/desktop/windows_integration.rs)、[`windows_smoke.rs`](src-tauri/src/desktop/windows_smoke.rs)和`tests/windows-*.py/js/cs`，不以自制闭源DLL代替实现。构建、原创夹具及复现入口见[Windows v3记录](docs/windows-native-v3.md)；本地源码状态与公开版本须以各次验证记录区分。
 
+2026-10-29新增功能及完整验收源码已分批提交至`main`，尚未发行对应的新安装版。下方v0.3.1下载仍是此前公开的稳定包；源码更新不代表日用应用或安装包已同步更新。
+
 浏览器可以完整体验导入、原创示例区域选择、标注、美化与下载；浏览器中的截图为明确标示的原创示例，真正桌面截图及置顶贴图仅原生版提供。
 
 0.3.1新增就地截图工具条、细边/圆角候选识别与显示尺寸预览优化。旧版需下载更新并确认「安装并重启」才会启用新交互，仅检查更新不会替换正在运行的软件。
